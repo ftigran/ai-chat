@@ -1,7 +1,6 @@
 import OpenAI from "openai";
 import { NextRequest } from "next/server";
-import { createMcpClient, listMcpToolsAsOpenAI, callMcpTool } from "@/lib/mcp";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { createMcpClient, listMcpToolsAsOpenAI, callMcpTool, type McpClient } from "@/lib/mcp";
 
 const GROQ_MODELS = ["llama-3.3-70b-versatile", "gemma2-9b-it", "mixtral-8x7b-32768"];
 
@@ -44,18 +43,17 @@ export async function POST(req: NextRequest) {
         }
 
         // Connect to all MCP servers and aggregate tools
-        const clients: Client[] = [];
-        const toolRoutes = new Map<string, Client>(); // tool name → client
+        const toolRoutes = new Map<string, { client: McpClient; originalName: string }>();
         const allTools: OpenAI.Chat.ChatCompletionTool[] = [];
 
         for (const server of activeServers) {
           try {
             const client = await createMcpClient(server.url);
-            clients.push(client);
-            const tools = await listMcpToolsAsOpenAI(client);
+            const { tools, nameMap } = await listMcpToolsAsOpenAI(client);
             for (const tool of tools) {
-              if (!toolRoutes.has(tool.function.name)) {
-                toolRoutes.set(tool.function.name, client);
+              const safeName = tool.function.name;
+              if (!toolRoutes.has(safeName)) {
+                toolRoutes.set(safeName, { client, originalName: nameMap.get(safeName) ?? safeName });
                 allTools.push(tool);
               }
             }
@@ -103,17 +101,17 @@ export async function POST(req: NextRequest) {
           currentMessages.push(msg as OAIMessage);
 
           for (const toolCall of msg.tool_calls as Array<{ id: string; function: { name: string; arguments: string } }>) {
-            const toolName = toolCall.function.name;
-            enqueue(`[tool:${toolName}]`);
+            const safeName = toolCall.function.name;
+            enqueue(`[tool:${safeName}]`);
 
-            const client = toolRoutes.get(toolName);
-            if (!client) {
+            const route = toolRoutes.get(safeName);
+            if (!route) {
               currentMessages.push({ role: "tool", tool_call_id: toolCall.id, content: "Tool not found" });
               continue;
             }
 
             const args = JSON.parse(toolCall.function.arguments || "{}");
-            const result = await callMcpTool(client, toolName, args);
+            const result = await callMcpTool(route.client, route.originalName, args);
             currentMessages.push({ role: "tool", tool_call_id: toolCall.id, content: result });
           }
         }

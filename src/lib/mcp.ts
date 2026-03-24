@@ -1,6 +1,8 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
+export type McpClient = Client;
+
 export async function createMcpClient(url: string): Promise<Client> {
   const client = new Client({ name: "ai-chat", version: "1.0.0" });
   const transport = new StreamableHTTPClientTransport(new URL(url));
@@ -8,16 +10,31 @@ export async function createMcpClient(url: string): Promise<Client> {
   return client;
 }
 
-export async function listMcpToolsAsOpenAI(client: Client) {
+// Groq requires tool names matching [a-zA-Z0-9_-], max 64 chars
+function sanitizeName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
+}
+
+export async function listMcpToolsAsOpenAI(
+  client: Client
+): Promise<{ tools: ReturnType<typeof buildTool>[]; nameMap: Map<string, string> }> {
   const { tools } = await client.listTools();
-  return tools.map((tool) => ({
+  const nameMap = new Map<string, string>(); // safe name → original name
+
+  const openaiTools = tools.map((tool) => {
+    const safeName = sanitizeName(tool.name);
+    nameMap.set(safeName, tool.name);
+    return buildTool(safeName, tool.description ?? "", tool.inputSchema as Record<string, unknown>);
+  });
+
+  return { tools: openaiTools, nameMap };
+}
+
+function buildTool(name: string, description: string, parameters: Record<string, unknown>) {
+  return {
     type: "function" as const,
-    function: {
-      name: tool.name,
-      description: tool.description ?? "",
-      parameters: tool.inputSchema as Record<string, unknown>,
-    },
-  }));
+    function: { name, description, parameters },
+  };
 }
 
 export async function callMcpTool(
