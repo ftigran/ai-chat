@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import { NextRequest } from "next/server";
 import { createMcpClient, listMcpToolsAsOpenAI, callMcpTool, type McpClient } from "@/lib/mcp";
 
-const GROQ_MODELS = ["llama-3.3-70b-versatile", "gemma2-9b-it", "mixtral-8x7b-32768"];
+const GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "qwen/qwen3-32b"];
 
 type OAIMessage = OpenAI.Chat.ChatCompletionMessageParam;
 

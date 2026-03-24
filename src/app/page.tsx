@@ -3,9 +3,9 @@
 import { useState, useRef, useEffect } from "react";
 
 const MODELS = [
-  { id: "llama-3.3-70b-versatile", label: "Llama 3.3 70B", provider: "Groq" },
-  { id: "gemma2-9b-it", label: "Gemma 2 9B", provider: "Groq" },
-  { id: "mixtral-8x7b-32768", label: "Mixtral 8x7B", provider: "Groq" },
+  { id: "llama-3.3-70b-versatile", label: "Llama 3.3 70B", provider: "Groq", mcpDisabled: true },
+  { id: "llama-3.1-8b-instant", label: "Llama 3.1 8B", provider: "Groq", mcpDisabled: true },
+  { id: "qwen/qwen3-32b", label: "Qwen 3 32B", provider: "Groq", mcpDisabled: false },
 ];
 
 type McpServer = { id: string; name: string; url: string; enabled: boolean };
@@ -40,6 +40,13 @@ function parseMessageParts(raw: string): MessagePart[] {
   }
 
   return parts.length > 0 ? parts : [{ type: "text", content: raw }];
+}
+
+function textOf(msg: Message): string {
+  return msg.parts
+    .filter((p): p is { type: "text"; content: string } => p.type === "text")
+    .map((p) => p.content)
+    .join("");
 }
 
 function MessageContent({ parts, streaming }: { parts: MessagePart[]; streaming?: boolean }) {
@@ -192,6 +199,11 @@ export default function Home() {
   const [transcribing, setTranscribing] = useState(false);
   const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
   const [ttsError, setTtsError] = useState<string | null>(null);
+  // Edit & regenerate state
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editingText, setEditingText] = useState<string>("");
+  const [regenModel, setRegenModel] = useState<Record<number, string>>({});
+
   const bottomRef = useRef<HTMLDivElement>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -225,6 +237,62 @@ export default function Home() {
   }, [showSettings]);
 
   const activeServers = mcpServers.filter((s) => s.enabled);
+
+  async function callAPI(
+    msgsToSend: Message[],
+    assistantIndex: number,
+    modelOverride?: string
+  ): Promise<void> {
+    try {
+      const apiMessages = msgsToSend.map((m) => ({
+        role: m.role,
+        content: m.parts
+          .filter((p): p is { type: "text"; content: string } => p.type === "text")
+          .map((p) => p.content)
+          .join(""),
+      }));
+
+      const effectiveModel = modelOverride ?? model;
+      const effectiveModelDef = MODELS.find((m) => m.id === effectiveModel);
+      const mcpDisabled = effectiveModelDef?.mcpDisabled ?? false;
+
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: apiMessages,
+          model: effectiveModel,
+          mcpServers: mcpDisabled ? [] : activeServers.map((s) => ({ url: s.url })),
+        }),
+      });
+
+      if (!res.body) throw new Error("No response body");
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let raw = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        raw += decoder.decode(value, { stream: true });
+        setMessages((prev) => {
+          const updated = [...prev];
+          updated[assistantIndex] = { role: "assistant", parts: parseMessageParts(raw) };
+          return updated;
+        });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Error";
+      setMessages((prev) => {
+        const updated = [...prev];
+        updated[assistantIndex] = { role: "assistant", parts: [{ type: "text", content: `Error: ${msg}` }] };
+        return updated;
+      });
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function toggleRecording() {
     if (recording) {
@@ -315,58 +383,38 @@ export default function Home() {
 
     const userMsg: Message = { role: "user", parts: [{ type: "text", content: text }] };
     const newMessages = [...messages, userMsg];
-    setMessages(newMessages);
+    setMessages([...newMessages, { role: "assistant", parts: [{ type: "text", content: "" }] }]);
     setInput("");
     setLoading(true);
 
-    const assistantIndex = newMessages.length;
-    setMessages((prev) => [...prev, { role: "assistant", parts: [{ type: "text", content: "" }] }]);
+    await callAPI(newMessages, newMessages.length);
+  }
 
-    try {
-      const apiMessages = newMessages.map((m) => ({
-        role: m.role,
-        content: m.parts
-          .filter((p): p is { type: "text"; content: string } => p.type === "text")
-          .map((p) => p.content)
-          .join(""),
-      }));
+  async function saveEdit(index: number, newText: string) {
+    if (!newText.trim() || loading) return;
 
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: apiMessages,
-          model,
-          mcpServers: activeServers.map((s) => ({ url: s.url })),
-        }),
-      });
+    const truncated = messages.slice(0, index);
+    const editedMsg: Message = { role: "user", parts: [{ type: "text", content: newText.trim() }] };
+    const newMessages = [...truncated, editedMsg];
+    setMessages([...newMessages, { role: "assistant", parts: [{ type: "text", content: "" }] }]);
+    setEditingIndex(null);
+    setLoading(true);
 
-      if (!res.body) throw new Error("No response body");
+    await callAPI(newMessages, newMessages.length);
+  }
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let raw = "";
+  async function regenerate(assistantIdx: number) {
+    if (loading) return;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        raw += decoder.decode(value, { stream: true });
-        setMessages((prev) => {
-          const updated = [...prev];
-          updated[assistantIndex] = { role: "assistant", parts: parseMessageParts(raw) };
-          return updated;
-        });
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Error";
-      setMessages((prev) => {
-        const updated = [...prev];
-        updated[assistantIndex] = { role: "assistant", parts: [{ type: "text", content: `Error: ${msg}` }] };
-        return updated;
-      });
-    } finally {
-      setLoading(false);
-    }
+    const msgsToSend = messages.slice(0, assistantIdx);
+    setMessages((prev) => {
+      const updated = [...prev];
+      updated[assistantIdx] = { role: "assistant", parts: [{ type: "text", content: "" }] };
+      return updated;
+    });
+    setLoading(true);
+
+    await callAPI(msgsToSend, assistantIdx, regenModel[assistantIdx]);
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -385,10 +433,17 @@ export default function Home() {
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-semibold">AI Chat</h1>
           {activeServers.length > 0 && (
-            <span className="flex items-center gap-1 text-xs text-emerald-400 bg-emerald-900/30 border border-emerald-800 rounded-full px-2 py-0.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block" />
-              {activeServers.length} MCP
-            </span>
+            selectedModel.mcpDisabled ? (
+              <span className="flex items-center gap-1 text-xs text-red-400 bg-red-900/30 border border-red-800 rounded-full px-2 py-0.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-red-400 inline-block" />
+                MCP OFF
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 text-xs text-emerald-400 bg-emerald-900/30 border border-emerald-800 rounded-full px-2 py-0.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block" />
+                {activeServers.length} MCP
+              </span>
+            )
           )}
         </div>
         <div className="flex items-center gap-3">
@@ -442,38 +497,113 @@ export default function Home() {
         <div className="max-w-3xl mx-auto space-y-4">
           {messages.map((msg, i) => (
             <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div
-                className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm ${
-                  msg.role === "user"
-                    ? "bg-blue-600 text-white rounded-br-sm"
-                    : "bg-gray-800 text-gray-100 rounded-bl-sm"
-                }`}
-              >
-                <MessageContent
-                  parts={msg.parts}
-                  streaming={loading && msg.role === "assistant" && i === messages.length - 1}
-                />
-                {msg.role === "assistant" && !(loading && i === messages.length - 1) && (
-                  <button
-                    onClick={() => speakMessage(i, msg.parts)}
-                    className={`mt-2 flex items-center gap-1 text-xs transition-colors ${
-                      speakingIndex === i ? "text-blue-400" : "text-gray-500 hover:text-gray-300"
-                    }`}
-                    title={speakingIndex === i ? "Остановить" : "Озвучить"}
-                  >
-                    {speakingIndex === i ? (
-                      <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-                        <rect x="6" y="4" width="4" height="16" rx="1" />
-                        <rect x="14" y="4" width="4" height="16" rx="1" />
-                      </svg>
-                    ) : (
+              {msg.role === "user" ? (
+                <div className="group relative flex justify-end items-start gap-2 max-w-[80%]">
+                  {/* Pencil button — visible on hover, hidden while loading or in edit mode */}
+                  {editingIndex !== i && !loading && (
+                    <button
+                      onClick={() => { setEditingIndex(i); setEditingText(textOf(msg)); }}
+                      className="opacity-0 group-hover:opacity-100 mt-2 text-gray-500 hover:text-gray-300 transition-opacity flex-shrink-0"
+                      title="Редактировать"
+                    >
                       <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15.536 8.464a5 5 0 010 7.072M12 6a7 7 0 010 12M9 9v6l4-3-4-3z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
                       </svg>
-                    )}
-                  </button>
-                )}
-              </div>
+                    </button>
+                  )}
+
+                  {editingIndex === i ? (
+                    <div className="flex flex-col gap-2 w-full">
+                      <textarea
+                        autoFocus
+                        value={editingText}
+                        onChange={(e) => setEditingText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); saveEdit(i, editingText); }
+                          if (e.key === "Escape") setEditingIndex(null);
+                        }}
+                        rows={3}
+                        className="bg-blue-700 text-white rounded-xl px-4 py-3 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-400 w-full"
+                      />
+                      <div className="flex justify-end gap-2">
+                        <button
+                          onClick={() => setEditingIndex(null)}
+                          className="text-xs text-gray-400 hover:text-gray-200 px-3 py-1.5 rounded-lg border border-gray-600 hover:border-gray-500 transition-colors"
+                        >
+                          Отмена
+                        </button>
+                        <button
+                          onClick={() => saveEdit(i, editingText)}
+                          disabled={loading || !editingText.trim()}
+                          className="text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg transition-colors"
+                        >
+                          Отправить
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-blue-600 text-white rounded-2xl rounded-br-sm px-4 py-3 text-sm">
+                      <MessageContent parts={msg.parts} />
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="max-w-[80%] bg-gray-800 text-gray-100 rounded-2xl rounded-bl-sm px-4 py-3 text-sm">
+                  <MessageContent
+                    parts={msg.parts}
+                    streaming={loading && i === messages.length - 1}
+                  />
+                  {!(loading && i === messages.length - 1) && (
+                    <div className="mt-2 flex items-center gap-2">
+                      {/* TTS button */}
+                      <button
+                        onClick={() => speakMessage(i, msg.parts)}
+                        className={`flex items-center gap-1 text-xs transition-colors ${
+                          speakingIndex === i ? "text-blue-400" : "text-gray-500 hover:text-gray-300"
+                        }`}
+                        title={speakingIndex === i ? "Остановить" : "Озвучить"}
+                      >
+                        {speakingIndex === i ? (
+                          <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                            <rect x="6" y="4" width="4" height="16" rx="1" />
+                            <rect x="14" y="4" width="4" height="16" rx="1" />
+                          </svg>
+                        ) : (
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15.536 8.464a5 5 0 010 7.072M12 6a7 7 0 010 12M9 9v6l4-3-4-3z" />
+                          </svg>
+                        )}
+                      </button>
+
+                      {/* Divider */}
+                      <span className="w-px h-3 bg-gray-600" />
+
+                      {/* Regenerate button */}
+                      <button
+                        onClick={() => regenerate(i)}
+                        disabled={loading}
+                        className="text-gray-500 hover:text-gray-300 disabled:opacity-40 transition-colors"
+                        title="Повторить запрос"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                      </button>
+
+                      {/* Per-message model selector */}
+                      <select
+                        value={regenModel[i] ?? model}
+                        onChange={(e) => setRegenModel((prev) => ({ ...prev, [i]: e.target.value }))}
+                        className="bg-gray-700 border border-gray-600 text-xs text-gray-300 rounded-md px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                      >
+                        {MODELS.map((m) => (
+                          <option key={m.id} value={m.id}>{m.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ))}
           <div ref={bottomRef} />
