@@ -15,6 +15,33 @@ function sanitizeName(name: string): string {
   return name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
 }
 
+// Groq doesn't accept $schema or array types like ["string", "null"]
+function cleanSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { $schema, ...rest } = schema;
+
+  if (rest.properties && typeof rest.properties === "object") {
+    const cleaned: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(rest.properties as Record<string, unknown>)) {
+      if (val && typeof val === "object") {
+        const prop = val as Record<string, unknown>;
+        if (Array.isArray(prop.type)) {
+          // ["string", "null"] → "string"
+          const nonNull = (prop.type as string[]).find((t) => t !== "null") ?? "string";
+          cleaned[key] = { ...prop, type: nonNull };
+        } else {
+          cleaned[key] = prop;
+        }
+      } else {
+        cleaned[key] = val;
+      }
+    }
+    rest.properties = cleaned;
+  }
+
+  return rest;
+}
+
 export async function listMcpToolsAsOpenAI(
   client: Client
 ): Promise<{ tools: ReturnType<typeof buildTool>[]; nameMap: Map<string, string> }> {
@@ -24,7 +51,7 @@ export async function listMcpToolsAsOpenAI(
   const openaiTools = tools.map((tool) => {
     const safeName = sanitizeName(tool.name);
     nameMap.set(safeName, tool.name);
-    return buildTool(safeName, tool.description ?? "", tool.inputSchema as Record<string, unknown>);
+    return buildTool(safeName, tool.description ?? "", cleanSchema(tool.inputSchema as Record<string, unknown>));
   });
 
   return { tools: openaiTools, nameMap };

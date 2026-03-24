@@ -72,10 +72,11 @@ export async function POST(req: NextRequest) {
           return;
         }
 
-        // Agentic loop
+        // Agentic loop (max 5 iterations to prevent infinite loops)
         let currentMessages: OAIMessage[] = [...messages];
+        let iterations = 0;
 
-        while (true) {
+        while (iterations++ < 5) {
           const response = await groq.chat.completions.create({
             model,
             messages: currentMessages,
@@ -89,7 +90,6 @@ export async function POST(req: NextRequest) {
 
           if (choice.finish_reason !== "tool_calls" || !msg.tool_calls?.length) {
             const finalText = msg.content ?? "";
-            // Simulate streaming for smoother UX
             const chunkSize = 8;
             for (let i = 0; i < finalText.length; i += chunkSize) {
               enqueue(finalText.slice(i, i + chunkSize));
@@ -98,9 +98,21 @@ export async function POST(req: NextRequest) {
             break;
           }
 
-          currentMessages.push(msg as OAIMessage);
+          // Reconstruct assistant message explicitly to avoid type mismatches
+          type RawToolCall = { id: string; type: string; function: { name: string; arguments: string } };
+          const toolCalls = (msg.tool_calls as RawToolCall[]).map((tc) => ({
+            id: tc.id,
+            type: "function" as const,
+            function: { name: tc.function.name, arguments: tc.function.arguments },
+          }));
 
-          for (const toolCall of msg.tool_calls as Array<{ id: string; function: { name: string; arguments: string } }>) {
+          currentMessages.push({
+            role: "assistant",
+            content: msg.content ?? null,
+            tool_calls: toolCalls,
+          });
+
+          for (const toolCall of toolCalls) {
             const safeName = toolCall.function.name;
             enqueue(`[tool:${safeName}]`);
 
