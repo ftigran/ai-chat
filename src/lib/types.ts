@@ -24,6 +24,7 @@ export interface Ticket {
   responsePreview: string;
   responseTime: number;
   conversationId: string;
+  channel: "web" | "telegram" | "email";
 }
 
 export interface DashboardMetrics {

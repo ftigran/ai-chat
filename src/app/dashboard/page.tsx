@@ -13,8 +13,23 @@ const COLOR_MAP: Record<string, { text: string; bg: string; border: string; bar:
   red: { text: "text-red-400", bg: "bg-red-900/40", border: "border-red-700/50", bar: "bg-red-500" },
 };
 
+const CHANNEL_STYLE: Record<string, { label: string; className: string }> = {
+  web: { label: "Web", className: "bg-gray-700/50 text-gray-400 border border-gray-600/50" },
+  telegram: { label: "TG", className: "bg-sky-900/40 text-sky-400 border border-sky-700/50" },
+  email: { label: "Email", className: "bg-violet-900/40 text-violet-400 border border-violet-700/50" },
+};
+
 function getColors(color: string) {
   return COLOR_MAP[color] ?? COLOR_MAP.blue;
+}
+
+function mergeTickets(local: Ticket[], server: Ticket[]): Ticket[] {
+  const seen = new Set(local.map((t) => t.id));
+  const merged = [...local];
+  for (const t of server) {
+    if (!seen.has(t.id)) merged.push(t);
+  }
+  return merged.sort((a, b) => a.timestamp - b.timestamp);
 }
 
 export default function Dashboard() {
@@ -22,9 +37,21 @@ export default function Dashboard() {
   const [metrics, setMetrics] = useState<DashboardMetrics>({ totalTickets: 0, byCategory: {}, avgResponseTime: 0 });
 
   useEffect(() => {
-    const t = loadTickets();
-    setTickets(t);
-    setMetrics(computeMetrics(t));
+    async function load() {
+      const local = loadTickets();
+      let server: Ticket[] = [];
+      try {
+        const res = await fetch("/api/tickets");
+        const data = await res.json();
+        server = data.tickets ?? [];
+      } catch {
+        // server tickets unavailable
+      }
+      const merged = mergeTickets(local, server);
+      setTickets(merged);
+      setMetrics(computeMetrics(merged));
+    }
+    load();
   }, []);
 
   function handleClear() {
@@ -121,6 +148,7 @@ export default function Dashboard() {
                 {[...tickets].reverse().map((ticket) => {
                   const agent = getAgentById(ticket.agentId);
                   const colors = agent ? getColors(agent.color) : getColors("blue");
+                  const channel = CHANNEL_STYLE[ticket.channel ?? "web"];
                   return (
                     <div key={ticket.id} className="px-4 py-3 flex items-center gap-4 hover:bg-gray-800/50 transition-colors">
                       <div className="text-xs text-gray-500 w-16 flex-shrink-0">
@@ -129,6 +157,9 @@ export default function Dashboard() {
                       <div className="flex-1 min-w-0">
                         <div className="text-sm truncate">{ticket.userMessage}</div>
                       </div>
+                      <span className={`inline-flex items-center text-xs px-2 py-0.5 rounded-full flex-shrink-0 ${channel.className}`}>
+                        {channel.label}
+                      </span>
                       <span className={`inline-flex items-center text-xs px-2 py-0.5 rounded-full border flex-shrink-0 ${colors.text} ${colors.bg} ${colors.border}`}>
                         {ticket.agentName}
                       </span>

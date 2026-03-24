@@ -7,7 +7,8 @@ export function loadTickets(): Ticket[] {
   const saved = localStorage.getItem(STORAGE_KEY);
   if (!saved) return [];
   try {
-    return JSON.parse(saved) as Ticket[];
+    const tickets = JSON.parse(saved) as Ticket[];
+    return tickets.map((t) => ({ ...t, channel: (t.channel ?? "web") as Ticket["channel"] }));
   } catch {
     return [];
   }

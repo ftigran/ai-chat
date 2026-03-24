@@ -442,6 +442,7 @@ export default function Home() {
         responsePreview: "",
         responseTime: Date.now() - startTime,
         conversationId,
+        channel: "web" as const,
       };
       saveTicket(ticket);
     }
