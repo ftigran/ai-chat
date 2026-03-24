@@ -188,8 +188,15 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [showSettings, setShowSettings] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
+  const [ttsError, setTtsError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     const saved = localStorage.getItem("mcpServers");
@@ -218,6 +225,89 @@ export default function Home() {
   }, [showSettings]);
 
   const activeServers = mcpServers.filter((s) => s.enabled);
+
+  async function toggleRecording() {
+    if (recording) {
+      mediaRecorderRef.current?.stop();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        setRecording(false);
+        setTranscribing(true);
+        try {
+          const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+          const formData = new FormData();
+          formData.append("file", blob, "audio.webm");
+          const res = await fetch("/api/transcribe", { method: "POST", body: formData });
+          const data = await res.json();
+          if (data.text) setInput((prev) => prev + (prev ? " " : "") + data.text);
+        } finally {
+          setTranscribing(false);
+        }
+      };
+
+      mediaRecorder.start();
+      setRecording(true);
+    } catch {
+      alert("Не удалось получить доступ к микрофону");
+    }
+  }
+
+  async function speakMessage(index: number, parts: MessagePart[]) {
+    if (speakingIndex === index) {
+      currentAudioRef.current?.pause();
+      currentAudioRef.current = null;
+      setSpeakingIndex(null);
+      return;
+    }
+
+    const text = parts
+      .filter((p): p is { type: "text"; content: string } => p.type === "text")
+      .map((p) => p.content)
+      .join("")
+      .trim();
+
+    if (!text) return;
+
+    setSpeakingIndex(index);
+    try {
+      const res = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) {
+        const msg = res.status === 402
+          ? "Озвучка недоступна: требуется платный план ElevenLabs"
+          : `Ошибка озвучки (${res.status})`;
+        setTtsError(msg);
+        setTimeout(() => setTtsError(null), 4000);
+        setSpeakingIndex(null);
+        return;
+      }
+      const blob = await res.blob();
+      const audio = new Audio(URL.createObjectURL(blob));
+      currentAudioRef.current = audio;
+      audio.onended = () => setSpeakingIndex(null);
+      audio.onerror = () => setSpeakingIndex(null);
+      audio.play();
+    } catch {
+      setTtsError("Не удалось подключиться к сервису озвучки");
+      setTimeout(() => setTtsError(null), 4000);
+      setSpeakingIndex(null);
+    }
+  }
 
   async function send() {
     const text = input.trim();
@@ -363,12 +453,39 @@ export default function Home() {
                   parts={msg.parts}
                   streaming={loading && msg.role === "assistant" && i === messages.length - 1}
                 />
+                {msg.role === "assistant" && !(loading && i === messages.length - 1) && (
+                  <button
+                    onClick={() => speakMessage(i, msg.parts)}
+                    className={`mt-2 flex items-center gap-1 text-xs transition-colors ${
+                      speakingIndex === i ? "text-blue-400" : "text-gray-500 hover:text-gray-300"
+                    }`}
+                    title={speakingIndex === i ? "Остановить" : "Озвучить"}
+                  >
+                    {speakingIndex === i ? (
+                      <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                        <rect x="6" y="4" width="4" height="16" rx="1" />
+                        <rect x="14" y="4" width="4" height="16" rx="1" />
+                      </svg>
+                    ) : (
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15.536 8.464a5 5 0 010 7.072M12 6a7 7 0 010 12M9 9v6l4-3-4-3z" />
+                      </svg>
+                    )}
+                  </button>
+                )}
               </div>
             </div>
           ))}
           <div ref={bottomRef} />
         </div>
       </main>
+
+      {/* TTS error toast */}
+      {ttsError && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-red-900/90 border border-red-700 text-red-200 text-sm px-4 py-2.5 rounded-xl shadow-lg z-50">
+          {ttsError}
+        </div>
+      )}
 
       {/* Input */}
       <footer className="border-t border-gray-800 px-4 py-4">
@@ -385,6 +502,31 @@ export default function Home() {
             rows={1}
             className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 max-h-40 overflow-y-auto"
           />
+          <button
+            onClick={toggleRecording}
+            disabled={transcribing || loading}
+            title={recording ? "Остановить запись" : "Голосовой ввод"}
+            className={`rounded-xl px-4 py-3 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+              recording
+                ? "bg-red-600 hover:bg-red-500 text-white"
+                : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+            }`}
+          >
+            {transcribing ? (
+              <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+              </svg>
+            ) : recording ? (
+              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>
+            ) : (
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+              </svg>
+            )}
+          </button>
           <button
             onClick={send}
             disabled={!input.trim() || loading}
