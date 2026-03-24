@@ -7,11 +7,17 @@ const GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "qwen/qw
 type OAIMessage = OpenAI.Chat.ChatCompletionMessageParam;
 
 export async function POST(req: NextRequest) {
-  const { messages, model, mcpServers } = await req.json() as {
+  const { messages, model, mcpServers, systemPrompt } = await req.json() as {
     messages: OAIMessage[];
     model: string;
     mcpServers?: { url: string }[];
+    systemPrompt?: string;
   };
+
+  // Prepend system prompt if provided
+  if (systemPrompt) {
+    messages.unshift({ role: "system", content: systemPrompt });
+  }
 
   const encoder = new TextEncoder();
 

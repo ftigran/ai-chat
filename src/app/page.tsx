@@ -1,6 +1,10 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import Link from "next/link";
+import { AGENTS, getAgentById, DEFAULT_AGENT_ID } from "@/lib/agents";
+import { saveTicket } from "@/lib/ticket-store";
+import type { Classification, Ticket } from "@/lib/types";
 
 const MODELS = [
   { id: "llama-3.3-70b-versatile", label: "Llama 3.3 70B", provider: "Groq", mcpDisabled: true },
@@ -203,6 +207,11 @@ export default function Home() {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editingText, setEditingText] = useState<string>("");
   const [regenModel, setRegenModel] = useState<Record<number, string>>({});
+  // Routing state
+  const [routingEnabled, setRoutingEnabled] = useState(false);
+  const [classifying, setClassifying] = useState(false);
+  const [classifications, setClassifications] = useState<Record<number, Classification>>({});
+  const [conversationId] = useState(() => crypto.randomUUID());
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
@@ -241,7 +250,8 @@ export default function Home() {
   async function callAPI(
     msgsToSend: Message[],
     assistantIndex: number,
-    modelOverride?: string
+    modelOverride?: string,
+    systemPrompt?: string
   ): Promise<void> {
     try {
       const apiMessages = msgsToSend.map((m) => ({
@@ -263,6 +273,7 @@ export default function Home() {
           messages: apiMessages,
           model: effectiveModel,
           mcpServers: mcpDisabled ? [] : activeServers.map((s) => ({ url: s.url })),
+          ...(systemPrompt && { systemPrompt }),
         }),
       });
 
@@ -383,11 +394,57 @@ export default function Home() {
 
     const userMsg: Message = { role: "user", parts: [{ type: "text", content: text }] };
     const newMessages = [...messages, userMsg];
+    const userMsgIndex = newMessages.length - 1;
     setMessages([...newMessages, { role: "assistant", parts: [{ type: "text", content: "" }] }]);
     setInput("");
     setLoading(true);
 
-    await callAPI(newMessages, newMessages.length);
+    let agentSystemPrompt: string | undefined;
+    let agentModelId: string | undefined;
+    let resolvedClassification: Classification | undefined;
+    const startTime = Date.now();
+
+    if (routingEnabled) {
+      setClassifying(true);
+      try {
+        const classifyRes = await fetch("/api/classify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: text }),
+        });
+        resolvedClassification = (await classifyRes.json()) as Classification;
+        setClassifications((prev) => ({ ...prev, [userMsgIndex]: resolvedClassification! }));
+
+        const agent = getAgentById(resolvedClassification.category);
+        if (agent) {
+          agentSystemPrompt = agent.systemPrompt;
+          agentModelId = agent.modelId;
+        }
+      } catch {
+        // Classification failed — continue without routing
+      } finally {
+        setClassifying(false);
+      }
+    }
+
+    await callAPI(newMessages, newMessages.length, agentModelId, agentSystemPrompt);
+
+    // Save ticket after response completes
+    if (routingEnabled && resolvedClassification) {
+      const agent = getAgentById(resolvedClassification.category);
+      const ticket: Ticket = {
+        id: crypto.randomUUID(),
+        timestamp: Date.now(),
+        userMessage: text,
+        classification: resolvedClassification,
+        agentId: resolvedClassification.category,
+        agentName: agent?.name ?? "FAQ",
+        responsePreview: "",
+        responseTime: Date.now() - startTime,
+        conversationId,
+      };
+      saveTicket(ticket);
+    }
   }
 
   async function saveEdit(index: number, newText: string) {
@@ -431,7 +488,7 @@ export default function Home() {
       {/* Header */}
       <header className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
         <div className="flex items-center gap-3">
-          <h1 className="text-lg font-semibold">AI Chat</h1>
+          <Link href="/dashboard" className="text-lg font-semibold hover:text-blue-400 transition-colors" title="Дашборд">AI Chat</Link>
           {activeServers.length > 0 && (
             selectedModel.mcpDisabled ? (
               <span className="flex items-center gap-1 text-xs text-red-400 bg-red-900/30 border border-red-800 rounded-full px-2 py-0.5">
@@ -445,6 +502,20 @@ export default function Home() {
               </span>
             )
           )}
+          <button
+            onClick={() => setRoutingEnabled((v) => !v)}
+            className={`flex items-center gap-1.5 text-xs rounded-full px-2.5 py-1 border transition-colors ${
+              routingEnabled
+                ? "text-violet-400 bg-violet-900/30 border-violet-800"
+                : "text-gray-500 bg-gray-800/50 border-gray-700 hover:text-gray-300"
+            }`}
+            title="Автомаршрутизация агентов"
+          >
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+            {routingEnabled ? "Routing ON" : "Routing"}
+          </button>
         </div>
         <div className="flex items-center gap-3">
           <span className="text-xs text-gray-400">{selectedModel.provider}</span>
@@ -542,8 +613,25 @@ export default function Home() {
                       </div>
                     </div>
                   ) : (
-                    <div className="bg-blue-600 text-white rounded-2xl rounded-br-sm px-4 py-3 text-sm">
-                      <MessageContent parts={msg.parts} />
+                    <div className="flex flex-col items-end gap-1">
+                      {classifications[i] && (() => {
+                        const agent = getAgentById(classifications[i].category);
+                        if (!agent) return null;
+                        const colorMap: Record<string, string> = {
+                          emerald: "text-emerald-400 bg-emerald-900/40 border-emerald-700/50",
+                          blue: "text-blue-400 bg-blue-900/40 border-blue-700/50",
+                          amber: "text-amber-400 bg-amber-900/40 border-amber-700/50",
+                          red: "text-red-400 bg-red-900/40 border-red-700/50",
+                        };
+                        return (
+                          <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border ${colorMap[agent.color] ?? colorMap.blue}`}>
+                            {agent.name}
+                          </span>
+                        );
+                      })()}
+                      <div className="bg-blue-600 text-white rounded-2xl rounded-br-sm px-4 py-3 text-sm">
+                        <MessageContent parts={msg.parts} />
+                      </div>
                     </div>
                   )}
                 </div>
@@ -606,6 +694,17 @@ export default function Home() {
               )}
             </div>
           ))}
+          {classifying && (
+            <div className="flex justify-start">
+              <div className="bg-violet-900/30 border border-violet-700/50 text-violet-300 text-xs px-3 py-2 rounded-xl flex items-center gap-2">
+                <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                </svg>
+                Классификация...
+              </div>
+            </div>
+          )}
           <div ref={bottomRef} />
         </div>
       </main>
