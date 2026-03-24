@@ -212,9 +212,15 @@ export default function Home() {
   const [classifying, setClassifying] = useState(false);
   const [classifications, setClassifications] = useState<Record<number, Classification>>({});
   const [conversationId] = useState(() => crypto.randomUUID());
+  // RAG state
+  const [ragEnabled, setRagEnabled] = useState(false);
+  const [showRagSettings, setShowRagSettings] = useState(false);
+  const [ragUploadStatus, setRagUploadStatus] = useState<string | null>(null);
+  const [ragUploading, setRagUploading] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
+  const ragSettingsRef = useRef<HTMLDivElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -245,6 +251,16 @@ export default function Home() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showSettings]);
 
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (ragSettingsRef.current && !ragSettingsRef.current.contains(e.target as Node)) {
+        setShowRagSettings(false);
+      }
+    }
+    if (showRagSettings) document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showRagSettings]);
+
   const activeServers = mcpServers.filter((s) => s.enabled);
 
   async function callAPI(
@@ -274,6 +290,7 @@ export default function Home() {
           model: effectiveModel,
           mcpServers: mcpDisabled ? [] : activeServers.map((s) => ({ url: s.url })),
           ...(systemPrompt && { systemPrompt }),
+          ragEnabled,
         }),
       });
 
@@ -517,6 +534,20 @@ export default function Home() {
             </svg>
             {routingEnabled ? "Routing ON" : "Routing"}
           </button>
+          <button
+            onClick={() => setRagEnabled((v) => !v)}
+            className={`flex items-center gap-1.5 text-xs rounded-full px-2.5 py-1 border transition-colors ${
+              ragEnabled
+                ? "text-teal-400 bg-teal-900/30 border-teal-800"
+                : "text-gray-500 bg-gray-800/50 border-gray-700 hover:text-gray-300"
+            }`}
+            title="Retrieval-Augmented Generation — поиск по базе знаний"
+          >
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.746 0 3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+            </svg>
+            {ragEnabled ? "RAG ON" : "RAG"}
+          </button>
         </div>
         <div className="flex items-center gap-3">
           <span className="text-xs text-gray-400">{selectedModel.provider}</span>
@@ -529,6 +560,71 @@ export default function Home() {
               <option key={m.id} value={m.id}>{m.label}</option>
             ))}
           </select>
+
+          <div className="relative" ref={ragSettingsRef}>
+            <button
+              onClick={() => setShowRagSettings((v) => !v)}
+              className={`p-1.5 rounded-lg transition-colors ${showRagSettings ? "bg-gray-700 text-teal-400" : "text-gray-400 hover:text-white hover:bg-gray-800"}`}
+              title="База знаний (RAG)"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.746 0 3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+              </svg>
+            </button>
+            {showRagSettings && (
+              <div className="absolute right-0 top-full mt-2 w-80 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-4 z-50">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-sm font-semibold text-gray-100">База знаний (RAG)</h2>
+                  <button onClick={() => setShowRagSettings(false)} className="text-gray-500 hover:text-gray-300">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+                <p className="text-xs text-gray-400 mb-3">
+                  Загрузите PDF-документ. Агенты будут использовать его как базу знаний при ответах.
+                </p>
+                <label className={`flex items-center justify-center gap-2 w-full py-2 px-3 rounded-lg border border-dashed text-sm cursor-pointer transition-colors ${ragUploading ? "border-gray-700 text-gray-600" : "border-gray-600 text-gray-300 hover:border-teal-600 hover:text-teal-300"}`}>
+                  <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                  </svg>
+                  {ragUploading ? "Загрузка..." : "Выбрать PDF"}
+                  <input
+                    type="file"
+                    accept="application/pdf"
+                    className="hidden"
+                    disabled={ragUploading}
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      setRagUploading(true);
+                      setRagUploadStatus(null);
+                      try {
+                        const fd = new FormData();
+                        fd.append("pdf", file);
+                        const res = await fetch("/api/upload-pdf", { method: "POST", body: fd });
+                        const data = await res.json();
+                        setRagUploadStatus(res.ok ? `Загружен: ${file.name}. Индексация запущена.` : `Ошибка: ${data.error}`);
+                      } catch {
+                        setRagUploadStatus("Ошибка загрузки");
+                      } finally {
+                        setRagUploading(false);
+                        e.target.value = "";
+                      }
+                    }}
+                  />
+                </label>
+                {ragUploadStatus && (
+                  <p className={`mt-2 text-xs ${ragUploadStatus.startsWith("Ошибка") ? "text-red-400" : "text-teal-400"}`}>
+                    {ragUploadStatus}
+                  </p>
+                )}
+                <p className="mt-3 text-xs text-gray-600">
+                  Индексация 500 стр. занимает ~1–2 мин. Включите RAG в шапке, чтобы использовать базу знаний.
+                </p>
+              </div>
+            )}
+          </div>
 
           <div className="relative" ref={settingsRef}>
             <button

@@ -7,16 +7,29 @@ const GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "qwen/qw
 type OAIMessage = OpenAI.Chat.ChatCompletionMessageParam;
 
 export async function POST(req: NextRequest) {
-  const { messages, model, mcpServers, systemPrompt } = await req.json() as {
+  const { messages, model, mcpServers, systemPrompt, ragEnabled } = await req.json() as {
     messages: OAIMessage[];
     model: string;
     mcpServers?: { url: string }[];
     systemPrompt?: string;
+    ragEnabled?: boolean;
   };
 
-  // Prepend system prompt if provided
-  if (systemPrompt) {
-    messages.unshift({ role: "system", content: systemPrompt });
+  // Prepend system prompt with optional RAG context
+  let finalSystemPrompt = systemPrompt;
+  if (ragEnabled) {
+    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+    const queryText = typeof lastUser?.content === "string" ? lastUser.content : "";
+    if (queryText) {
+      const { queryRAG } = await import("@/lib/rag-service");
+      const ctx = await queryRAG(queryText);
+      if (ctx) {
+        finalSystemPrompt = ctx + (finalSystemPrompt ? `\n\n---\n\n${finalSystemPrompt}` : "");
+      }
+    }
+  }
+  if (finalSystemPrompt) {
+    messages.unshift({ role: "system", content: finalSystemPrompt });
   }
 
   const encoder = new TextEncoder();
@@ -79,7 +92,7 @@ export async function POST(req: NextRequest) {
         }
 
         // Agentic loop (max 5 iterations to prevent infinite loops)
-        let currentMessages: OAIMessage[] = [...messages];
+        const currentMessages: OAIMessage[] = [...messages];
         let iterations = 0;
 
         while (iterations++ < 5) {
