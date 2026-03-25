@@ -1,11 +1,21 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import Link from "next/link";
+import { AGENTS, getAgentById, DEFAULT_AGENT_ID } from "@/lib/agents";
+import { saveTicket } from "@/lib/ticket-store";
+import {
+  saveFeedback,
+  getFeedbacksByAgent,
+  saveAgentPrompt,
+  loadAgentPrompts,
+} from "@/lib/feedback-store";
+import type { Classification, Ticket } from "@/lib/types";
 
 const MODELS = [
-  { id: "llama-3.3-70b-versatile", label: "Llama 3.3 70B", provider: "Groq" },
-  { id: "gemma2-9b-it", label: "Gemma 2 9B", provider: "Groq" },
-  { id: "mixtral-8x7b-32768", label: "Mixtral 8x7B", provider: "Groq" },
+  { id: "llama-3.3-70b-versatile", label: "Llama 3.3 70B", provider: "Groq", mcpDisabled: true },
+  { id: "llama-3.1-8b-instant", label: "Llama 3.1 8B", provider: "Groq", mcpDisabled: true },
+  { id: "qwen/qwen3-32b", label: "Qwen 3 32B", provider: "Groq", mcpDisabled: false },
 ];
 
 type McpServer = { id: string; name: string; url: string; enabled: boolean };
@@ -40,6 +50,13 @@ function parseMessageParts(raw: string): MessagePart[] {
   }
 
   return parts.length > 0 ? parts : [{ type: "text", content: raw }];
+}
+
+function textOf(msg: Message): string {
+  return msg.parts
+    .filter((p): p is { type: "text"; content: string } => p.type === "text")
+    .map((p) => p.content)
+    .join("");
 }
 
 function MessageContent({ parts, streaming }: { parts: MessagePart[]; streaming?: boolean }) {
@@ -188,8 +205,42 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [showSettings, setShowSettings] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
+  const [ttsError, setTtsError] = useState<string | null>(null);
+  // Edit & regenerate state
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editingText, setEditingText] = useState<string>("");
+  const [regenModel, setRegenModel] = useState<Record<number, string>>({});
+  // Routing state
+  const [routingEnabled, setRoutingEnabled] = useState(false);
+  const [classifying, setClassifying] = useState(false);
+  const [classifications, setClassifications] = useState<Record<number, Classification>>({});
+  const [conversationId] = useState(() => crypto.randomUUID());
+  // RAG state
+  const [ragEnabled, setRagEnabled] = useState(false);
+  const [showRagSettings, setShowRagSettings] = useState(false);
+  const [ragUploadStatus, setRagUploadStatus] = useState<string | null>(null);
+  const [ragUploading, setRagUploading] = useState(false);
+  // Feedback & self-improvement state
+  const [feedbacks, setFeedbacks] = useState<Record<number, "like" | "dislike">>({});
+  const [messageAgents, setMessageAgents] = useState<Record<number, string>>({});
+  const [agentPromptOverrides, setAgentPromptOverrides] = useState<Record<string, string>>(loadAgentPrompts);
+  const [improvementSuggestion, setImprovementSuggestion] = useState<{
+    agentId: string;
+    agentName: string;
+    prompt: string;
+  } | null>(null);
+  const [editedSuggestion, setEditedSuggestion] = useState("");
+  const [improving, setImproving] = useState(false);
+
   const bottomRef = useRef<HTMLDivElement>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
+  const ragSettingsRef = useRef<HTMLDivElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     const saved = localStorage.getItem("mcpServers");
@@ -217,23 +268,26 @@ export default function Home() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showSettings]);
 
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (ragSettingsRef.current && !ragSettingsRef.current.contains(e.target as Node)) {
+        setShowRagSettings(false);
+      }
+    }
+    if (showRagSettings) document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showRagSettings]);
+
   const activeServers = mcpServers.filter((s) => s.enabled);
 
-  async function send() {
-    const text = input.trim();
-    if (!text || loading) return;
-
-    const userMsg: Message = { role: "user", parts: [{ type: "text", content: text }] };
-    const newMessages = [...messages, userMsg];
-    setMessages(newMessages);
-    setInput("");
-    setLoading(true);
-
-    const assistantIndex = newMessages.length;
-    setMessages((prev) => [...prev, { role: "assistant", parts: [{ type: "text", content: "" }] }]);
-
+  async function callAPI(
+    msgsToSend: Message[],
+    assistantIndex: number,
+    modelOverride?: string,
+    systemPrompt?: string
+  ): Promise<void> {
     try {
-      const apiMessages = newMessages.map((m) => ({
+      const apiMessages = msgsToSend.map((m) => ({
         role: m.role,
         content: m.parts
           .filter((p): p is { type: "text"; content: string } => p.type === "text")
@@ -241,13 +295,19 @@ export default function Home() {
           .join(""),
       }));
 
+      const effectiveModel = modelOverride ?? model;
+      const effectiveModelDef = MODELS.find((m) => m.id === effectiveModel);
+      const mcpDisabled = effectiveModelDef?.mcpDisabled ?? false;
+
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: apiMessages,
-          model,
-          mcpServers: activeServers.map((s) => ({ url: s.url })),
+          model: effectiveModel,
+          mcpServers: mcpDisabled ? [] : activeServers.map((s) => ({ url: s.url })),
+          ...(systemPrompt && { systemPrompt }),
+          ragEnabled,
         }),
       });
 
@@ -279,6 +339,257 @@ export default function Home() {
     }
   }
 
+  async function toggleRecording() {
+    if (recording) {
+      mediaRecorderRef.current?.stop();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        setRecording(false);
+        setTranscribing(true);
+        try {
+          const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+          const formData = new FormData();
+          formData.append("file", blob, "audio.webm");
+          const res = await fetch("/api/transcribe", { method: "POST", body: formData });
+          const data = await res.json();
+          if (data.text) setInput((prev) => prev + (prev ? " " : "") + data.text);
+        } finally {
+          setTranscribing(false);
+        }
+      };
+
+      mediaRecorder.start();
+      setRecording(true);
+    } catch {
+      alert("Не удалось получить доступ к микрофону");
+    }
+  }
+
+  async function speakMessage(index: number, parts: MessagePart[]) {
+    if (speakingIndex === index) {
+      currentAudioRef.current?.pause();
+      currentAudioRef.current = null;
+      setSpeakingIndex(null);
+      return;
+    }
+
+    const text = parts
+      .filter((p): p is { type: "text"; content: string } => p.type === "text")
+      .map((p) => p.content)
+      .join("")
+      .trim();
+
+    if (!text) return;
+
+    setSpeakingIndex(index);
+    try {
+      const res = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) {
+        const msg = res.status === 402
+          ? "Озвучка недоступна: требуется платный план ElevenLabs"
+          : `Ошибка озвучки (${res.status})`;
+        setTtsError(msg);
+        setTimeout(() => setTtsError(null), 4000);
+        setSpeakingIndex(null);
+        return;
+      }
+      const blob = await res.blob();
+      const audio = new Audio(URL.createObjectURL(blob));
+      currentAudioRef.current = audio;
+      audio.onended = () => setSpeakingIndex(null);
+      audio.onerror = () => setSpeakingIndex(null);
+      audio.play();
+    } catch {
+      setTtsError("Не удалось подключиться к сервису озвучки");
+      setTimeout(() => setTtsError(null), 4000);
+      setSpeakingIndex(null);
+    }
+  }
+
+  async function triggerImprovement(agentId: string) {
+    const agent = getAgentById(agentId);
+    if (!agent || improving) return;
+
+    const currentPrompt = agentPromptOverrides[agentId] ?? agent.systemPrompt;
+    const allFeedbacks = getFeedbacksByAgent(agentId);
+    const liked = allFeedbacks.filter((f) => f.feedback === "like").map((f) => f.messageText).slice(-5);
+    const disliked = allFeedbacks.filter((f) => f.feedback === "dislike").map((f) => f.messageText).slice(-5);
+
+    setImproving(true);
+    try {
+      const res = await fetch("/api/improve-prompt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId, agentName: agent.name, currentPrompt, liked, disliked }),
+      });
+      const data = await res.json();
+      if (data.improvedPrompt) {
+        setImprovementSuggestion({ agentId, agentName: agent.name, prompt: data.improvedPrompt });
+        setEditedSuggestion(data.improvedPrompt);
+      }
+    } catch {
+      // silently ignore
+    } finally {
+      setImproving(false);
+    }
+  }
+
+  function handleFeedback(
+    messageIndex: number,
+    messageText: string,
+    feedback: "like" | "dislike",
+    agentId: string | null
+  ) {
+    // Toggle off if same feedback clicked again
+    const current = feedbacks[messageIndex];
+    const newFeedback = current === feedback ? undefined : feedback;
+
+    setFeedbacks((prev) => {
+      const updated = { ...prev };
+      if (newFeedback === undefined) {
+        delete updated[messageIndex];
+      } else {
+        updated[messageIndex] = newFeedback;
+      }
+      return updated;
+    });
+
+    if (newFeedback === undefined) return;
+
+    saveFeedback({
+      id: crypto.randomUUID(),
+      conversationId,
+      messageIndex,
+      feedback: newFeedback,
+      messageText: messageText.slice(0, 500),
+      agentId,
+      timestamp: Date.now(),
+    });
+
+    // Trigger improvement after 3 dislikes for an agent
+    if (newFeedback === "dislike" && agentId && routingEnabled) {
+      const agentDislikes = getFeedbacksByAgent(agentId).filter((f) => f.feedback === "dislike");
+      if (agentDislikes.length >= 3 && !improvementSuggestion) {
+        triggerImprovement(agentId);
+      }
+    }
+  }
+
+  function applyImprovement() {
+    if (!improvementSuggestion) return;
+    saveAgentPrompt(improvementSuggestion.agentId, editedSuggestion);
+    setAgentPromptOverrides((prev) => ({ ...prev, [improvementSuggestion.agentId]: editedSuggestion }));
+    setImprovementSuggestion(null);
+  }
+
+  async function send() {
+    const text = input.trim();
+    if (!text || loading) return;
+
+    const userMsg: Message = { role: "user", parts: [{ type: "text", content: text }] };
+    const newMessages = [...messages, userMsg];
+    const userMsgIndex = newMessages.length - 1;
+    setMessages([...newMessages, { role: "assistant", parts: [{ type: "text", content: "" }] }]);
+    setInput("");
+    setLoading(true);
+
+    let agentSystemPrompt: string | undefined;
+    let agentModelId: string | undefined;
+    let resolvedClassification: Classification | undefined;
+    const startTime = Date.now();
+
+    if (routingEnabled) {
+      setClassifying(true);
+      try {
+        const classifyRes = await fetch("/api/classify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: text }),
+        });
+        resolvedClassification = (await classifyRes.json()) as Classification;
+        setClassifications((prev) => ({ ...prev, [userMsgIndex]: resolvedClassification! }));
+
+        const agent = getAgentById(resolvedClassification.category);
+        if (agent) {
+          agentSystemPrompt = agentPromptOverrides[agent.id] ?? agent.systemPrompt;
+          agentModelId = agent.modelId;
+        }
+      } catch {
+        // Classification failed — continue without routing
+      } finally {
+        setClassifying(false);
+      }
+    }
+
+    const assistantMsgIndex = newMessages.length;
+    if (routingEnabled && resolvedClassification) {
+      setMessageAgents((prev) => ({ ...prev, [assistantMsgIndex]: resolvedClassification!.category }));
+    }
+
+    await callAPI(newMessages, assistantMsgIndex, agentModelId, agentSystemPrompt);
+
+    // Save ticket after response completes
+    if (routingEnabled && resolvedClassification) {
+      const agent = getAgentById(resolvedClassification.category);
+      const ticket: Ticket = {
+        id: crypto.randomUUID(),
+        timestamp: Date.now(),
+        userMessage: text,
+        classification: resolvedClassification,
+        agentId: resolvedClassification.category,
+        agentName: agent?.name ?? "FAQ",
+        responsePreview: "",
+        responseTime: Date.now() - startTime,
+        conversationId,
+        channel: "web" as const,
+      };
+      saveTicket(ticket);
+    }
+  }
+
+  async function saveEdit(index: number, newText: string) {
+    if (!newText.trim() || loading) return;
+
+    const truncated = messages.slice(0, index);
+    const editedMsg: Message = { role: "user", parts: [{ type: "text", content: newText.trim() }] };
+    const newMessages = [...truncated, editedMsg];
+    setMessages([...newMessages, { role: "assistant", parts: [{ type: "text", content: "" }] }]);
+    setEditingIndex(null);
+    setLoading(true);
+
+    await callAPI(newMessages, newMessages.length);
+  }
+
+  async function regenerate(assistantIdx: number) {
+    if (loading) return;
+
+    const msgsToSend = messages.slice(0, assistantIdx);
+    setMessages((prev) => {
+      const updated = [...prev];
+      updated[assistantIdx] = { role: "assistant", parts: [{ type: "text", content: "" }] };
+      return updated;
+    });
+    setLoading(true);
+
+    await callAPI(msgsToSend, assistantIdx, regenModel[assistantIdx]);
+  }
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -293,13 +604,48 @@ export default function Home() {
       {/* Header */}
       <header className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
         <div className="flex items-center gap-3">
-          <h1 className="text-lg font-semibold">AI Chat</h1>
+          <Link href="/dashboard" className="text-lg font-semibold hover:text-blue-400 transition-colors" title="Дашборд">AI Chat</Link>
           {activeServers.length > 0 && (
-            <span className="flex items-center gap-1 text-xs text-emerald-400 bg-emerald-900/30 border border-emerald-800 rounded-full px-2 py-0.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block" />
-              {activeServers.length} MCP
-            </span>
+            selectedModel.mcpDisabled ? (
+              <span className="flex items-center gap-1 text-xs text-red-400 bg-red-900/30 border border-red-800 rounded-full px-2 py-0.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-red-400 inline-block" />
+                MCP OFF
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 text-xs text-emerald-400 bg-emerald-900/30 border border-emerald-800 rounded-full px-2 py-0.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block" />
+                {activeServers.length} MCP
+              </span>
+            )
           )}
+          <button
+            onClick={() => setRoutingEnabled((v) => !v)}
+            className={`flex items-center gap-1.5 text-xs rounded-full px-2.5 py-1 border transition-colors ${
+              routingEnabled
+                ? "text-violet-400 bg-violet-900/30 border-violet-800"
+                : "text-gray-500 bg-gray-800/50 border-gray-700 hover:text-gray-300"
+            }`}
+            title="Автомаршрутизация агентов"
+          >
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+            {routingEnabled ? "Routing ON" : "Routing"}
+          </button>
+          <button
+            onClick={() => setRagEnabled((v) => !v)}
+            className={`flex items-center gap-1.5 text-xs rounded-full px-2.5 py-1 border transition-colors ${
+              ragEnabled
+                ? "text-teal-400 bg-teal-900/30 border-teal-800"
+                : "text-gray-500 bg-gray-800/50 border-gray-700 hover:text-gray-300"
+            }`}
+            title="Retrieval-Augmented Generation — поиск по базе знаний"
+          >
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.746 0 3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+            </svg>
+            {ragEnabled ? "RAG ON" : "RAG"}
+          </button>
         </div>
         <div className="flex items-center gap-3">
           <span className="text-xs text-gray-400">{selectedModel.provider}</span>
@@ -312,6 +658,71 @@ export default function Home() {
               <option key={m.id} value={m.id}>{m.label}</option>
             ))}
           </select>
+
+          <div className="relative" ref={ragSettingsRef}>
+            <button
+              onClick={() => setShowRagSettings((v) => !v)}
+              className={`p-1.5 rounded-lg transition-colors ${showRagSettings ? "bg-gray-700 text-teal-400" : "text-gray-400 hover:text-white hover:bg-gray-800"}`}
+              title="База знаний (RAG)"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.746 0 3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+              </svg>
+            </button>
+            {showRagSettings && (
+              <div className="absolute right-0 top-full mt-2 w-80 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-4 z-50">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-sm font-semibold text-gray-100">База знаний (RAG)</h2>
+                  <button onClick={() => setShowRagSettings(false)} className="text-gray-500 hover:text-gray-300">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+                <p className="text-xs text-gray-400 mb-3">
+                  Загрузите PDF-документ. Агенты будут использовать его как базу знаний при ответах.
+                </p>
+                <label className={`flex items-center justify-center gap-2 w-full py-2 px-3 rounded-lg border border-dashed text-sm cursor-pointer transition-colors ${ragUploading ? "border-gray-700 text-gray-600" : "border-gray-600 text-gray-300 hover:border-teal-600 hover:text-teal-300"}`}>
+                  <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                  </svg>
+                  {ragUploading ? "Загрузка..." : "Выбрать PDF"}
+                  <input
+                    type="file"
+                    accept="application/pdf"
+                    className="hidden"
+                    disabled={ragUploading}
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      setRagUploading(true);
+                      setRagUploadStatus(null);
+                      try {
+                        const fd = new FormData();
+                        fd.append("pdf", file);
+                        const res = await fetch("/api/upload-pdf", { method: "POST", body: fd });
+                        const data = await res.json();
+                        setRagUploadStatus(res.ok ? `Загружен: ${file.name}. Индексация запущена.` : `Ошибка: ${data.error}`);
+                      } catch {
+                        setRagUploadStatus("Ошибка загрузки");
+                      } finally {
+                        setRagUploading(false);
+                        e.target.value = "";
+                      }
+                    }}
+                  />
+                </label>
+                {ragUploadStatus && (
+                  <p className={`mt-2 text-xs ${ragUploadStatus.startsWith("Ошибка") ? "text-red-400" : "text-teal-400"}`}>
+                    {ragUploadStatus}
+                  </p>
+                )}
+                <p className="mt-3 text-xs text-gray-600">
+                  Индексация 500 стр. занимает ~1–2 мин. Включите RAG в шапке, чтобы использовать базу знаний.
+                </p>
+              </div>
+            )}
+          </div>
 
           <div className="relative" ref={settingsRef}>
             <button
@@ -352,23 +763,233 @@ export default function Home() {
         <div className="max-w-3xl mx-auto space-y-4">
           {messages.map((msg, i) => (
             <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div
-                className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm ${
-                  msg.role === "user"
-                    ? "bg-blue-600 text-white rounded-br-sm"
-                    : "bg-gray-800 text-gray-100 rounded-bl-sm"
-                }`}
-              >
-                <MessageContent
-                  parts={msg.parts}
-                  streaming={loading && msg.role === "assistant" && i === messages.length - 1}
-                />
-              </div>
+              {msg.role === "user" ? (
+                <div className="group relative flex justify-end items-start gap-2 max-w-[80%]">
+                  {/* Pencil button — visible on hover, hidden while loading or in edit mode */}
+                  {editingIndex !== i && !loading && (
+                    <button
+                      onClick={() => { setEditingIndex(i); setEditingText(textOf(msg)); }}
+                      className="opacity-0 group-hover:opacity-100 mt-2 text-gray-500 hover:text-gray-300 transition-opacity flex-shrink-0"
+                      title="Редактировать"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                      </svg>
+                    </button>
+                  )}
+
+                  {editingIndex === i ? (
+                    <div className="flex flex-col gap-2 w-full">
+                      <textarea
+                        autoFocus
+                        value={editingText}
+                        onChange={(e) => setEditingText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); saveEdit(i, editingText); }
+                          if (e.key === "Escape") setEditingIndex(null);
+                        }}
+                        rows={3}
+                        className="bg-blue-700 text-white rounded-xl px-4 py-3 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-400 w-full"
+                      />
+                      <div className="flex justify-end gap-2">
+                        <button
+                          onClick={() => setEditingIndex(null)}
+                          className="text-xs text-gray-400 hover:text-gray-200 px-3 py-1.5 rounded-lg border border-gray-600 hover:border-gray-500 transition-colors"
+                        >
+                          Отмена
+                        </button>
+                        <button
+                          onClick={() => saveEdit(i, editingText)}
+                          disabled={loading || !editingText.trim()}
+                          className="text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg transition-colors"
+                        >
+                          Отправить
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-end gap-1">
+                      {classifications[i] && (() => {
+                        const agent = getAgentById(classifications[i].category);
+                        if (!agent) return null;
+                        const colorMap: Record<string, string> = {
+                          emerald: "text-emerald-400 bg-emerald-900/40 border-emerald-700/50",
+                          blue: "text-blue-400 bg-blue-900/40 border-blue-700/50",
+                          amber: "text-amber-400 bg-amber-900/40 border-amber-700/50",
+                          red: "text-red-400 bg-red-900/40 border-red-700/50",
+                        };
+                        return (
+                          <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border ${colorMap[agent.color] ?? colorMap.blue}`}>
+                            {agent.name}
+                          </span>
+                        );
+                      })()}
+                      <div className="bg-blue-600 text-white rounded-2xl rounded-br-sm px-4 py-3 text-sm">
+                        <MessageContent parts={msg.parts} />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="max-w-[80%] bg-gray-800 text-gray-100 rounded-2xl rounded-bl-sm px-4 py-3 text-sm">
+                  <MessageContent
+                    parts={msg.parts}
+                    streaming={loading && i === messages.length - 1}
+                  />
+                  {!(loading && i === messages.length - 1) && (
+                    <div className="mt-2 flex items-center gap-2">
+                      {/* TTS button */}
+                      <button
+                        onClick={() => speakMessage(i, msg.parts)}
+                        className={`flex items-center gap-1 text-xs transition-colors ${
+                          speakingIndex === i ? "text-blue-400" : "text-gray-500 hover:text-gray-300"
+                        }`}
+                        title={speakingIndex === i ? "Остановить" : "Озвучить"}
+                      >
+                        {speakingIndex === i ? (
+                          <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                            <rect x="6" y="4" width="4" height="16" rx="1" />
+                            <rect x="14" y="4" width="4" height="16" rx="1" />
+                          </svg>
+                        ) : (
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15.536 8.464a5 5 0 010 7.072M12 6a7 7 0 010 12M9 9v6l4-3-4-3z" />
+                          </svg>
+                        )}
+                      </button>
+
+                      {/* Divider */}
+                      <span className="w-px h-3 bg-gray-600" />
+
+                      {/* Like/Dislike buttons */}
+                      <button
+                        onClick={() => handleFeedback(i, textOf(msg), "like", messageAgents[i] ?? null)}
+                        className={`transition-colors ${
+                          feedbacks[i] === "like" ? "text-green-400" : "text-gray-500 hover:text-gray-300"
+                        }`}
+                        title="Полезный ответ"
+                      >
+                        <svg className="w-3.5 h-3.5" fill={feedbacks[i] === "like" ? "currentColor" : "none"} viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M14 10h4.764a2 2 0 011.789 2.894l-3.5 7A2 2 0 0115.263 21h-4.017c-.163 0-.326-.02-.485-.06L7 20m7-10V5a2 2 0 00-2-2h-.095c-.5 0-.905.405-.905.905 0 .714-.211 1.412-.608 2.006L7 11v9m7-10h-2M7 20H5a2 2 0 01-2-2v-6a2 2 0 012-2h2.5" />
+                        </svg>
+                      </button>
+                      <button
+                        onClick={() => handleFeedback(i, textOf(msg), "dislike", messageAgents[i] ?? null)}
+                        className={`transition-colors ${
+                          feedbacks[i] === "dislike" ? "text-red-400" : "text-gray-500 hover:text-gray-300"
+                        }`}
+                        title="Плохой ответ"
+                      >
+                        <svg className="w-3.5 h-3.5" fill={feedbacks[i] === "dislike" ? "currentColor" : "none"} viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 14H5.236a2 2 0 01-1.789-2.894l3.5-7A2 2 0 018.736 3h4.018c.163 0 .326.02.485.06L17 4m-7 10v2a2 2 0 002 2h.095c.5 0 .905-.405.905-.905 0-.714.211-1.412.608-2.006L17 13V4m-7 10h2m5-10h2a2 2 0 012 2v6a2 2 0 01-2 2h-2.5" />
+                        </svg>
+                      </button>
+
+                      {/* Divider */}
+                      <span className="w-px h-3 bg-gray-600" />
+
+                      {/* Regenerate button */}
+                      <button
+                        onClick={() => regenerate(i)}
+                        disabled={loading}
+                        className="text-gray-500 hover:text-gray-300 disabled:opacity-40 transition-colors"
+                        title="Повторить запрос"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                      </button>
+
+                      {/* Per-message model selector */}
+                      <select
+                        value={regenModel[i] ?? model}
+                        onChange={(e) => setRegenModel((prev) => ({ ...prev, [i]: e.target.value }))}
+                        className="bg-gray-700 border border-gray-600 text-xs text-gray-300 rounded-md px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                      >
+                        {MODELS.map((m) => (
+                          <option key={m.id} value={m.id}>{m.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ))}
+          {classifying && (
+            <div className="flex justify-start">
+              <div className="bg-violet-900/30 border border-violet-700/50 text-violet-300 text-xs px-3 py-2 rounded-xl flex items-center gap-2">
+                <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                </svg>
+                Классификация...
+              </div>
+            </div>
+          )}
           <div ref={bottomRef} />
         </div>
       </main>
+
+      {/* TTS error toast */}
+      {ttsError && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-red-900/90 border border-red-700 text-red-200 text-sm px-4 py-2.5 rounded-xl shadow-lg z-50">
+          {ttsError}
+        </div>
+      )}
+
+      {/* Prompt improvement banner */}
+      {improving && (
+        <div className="border-t border-amber-800/40 bg-amber-900/10 px-4 py-3">
+          <div className="max-w-3xl mx-auto flex items-center gap-2 text-amber-400 text-xs">
+            <svg className="w-3.5 h-3.5 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+            </svg>
+            Анализирую обратную связь и улучшаю промпт агента...
+          </div>
+        </div>
+      )}
+      {improvementSuggestion && !improving && (
+        <div className="border-t border-amber-800/50 bg-amber-900/15 px-4 py-3">
+          <div className="max-w-3xl mx-auto">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-medium text-amber-400">
+                ✨ Предложение по улучшению промпта агента «{improvementSuggestion.agentName}»
+              </p>
+              <button
+                onClick={() => setImprovementSuggestion(null)}
+                className="text-gray-500 hover:text-gray-300 transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <textarea
+              value={editedSuggestion}
+              onChange={(e) => setEditedSuggestion(e.target.value)}
+              rows={4}
+              className="w-full bg-gray-900 border border-amber-700/40 text-gray-200 text-xs rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-amber-600"
+            />
+            <div className="flex gap-2 mt-2">
+              <button
+                onClick={applyImprovement}
+                disabled={!editedSuggestion.trim()}
+                className="text-xs bg-amber-700 hover:bg-amber-600 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg transition-colors"
+              >
+                Применить
+              </button>
+              <button
+                onClick={() => setImprovementSuggestion(null)}
+                className="text-xs text-gray-400 hover:text-gray-200 px-3 py-1.5 rounded-lg border border-gray-600 hover:border-gray-500 transition-colors"
+              >
+                Отклонить
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Input */}
       <footer className="border-t border-gray-800 px-4 py-4">
@@ -385,6 +1006,31 @@ export default function Home() {
             rows={1}
             className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 max-h-40 overflow-y-auto"
           />
+          <button
+            onClick={toggleRecording}
+            disabled={transcribing || loading}
+            title={recording ? "Остановить запись" : "Голосовой ввод"}
+            className={`rounded-xl px-4 py-3 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+              recording
+                ? "bg-red-600 hover:bg-red-500 text-white"
+                : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+            }`}
+          >
+            {transcribing ? (
+              <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+              </svg>
+            ) : recording ? (
+              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>
+            ) : (
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+              </svg>
+            )}
+          </button>
           <button
             onClick={send}
             disabled={!input.trim() || loading}
