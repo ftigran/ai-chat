@@ -4,6 +4,12 @@ import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { AGENTS, getAgentById, DEFAULT_AGENT_ID } from "@/lib/agents";
 import { saveTicket } from "@/lib/ticket-store";
+import {
+  saveFeedback,
+  getFeedbacksByAgent,
+  saveAgentPrompt,
+  loadAgentPrompts,
+} from "@/lib/feedback-store";
 import type { Classification, Ticket } from "@/lib/types";
 
 const MODELS = [
@@ -217,6 +223,17 @@ export default function Home() {
   const [showRagSettings, setShowRagSettings] = useState(false);
   const [ragUploadStatus, setRagUploadStatus] = useState<string | null>(null);
   const [ragUploading, setRagUploading] = useState(false);
+  // Feedback & self-improvement state
+  const [feedbacks, setFeedbacks] = useState<Record<number, "like" | "dislike">>({});
+  const [messageAgents, setMessageAgents] = useState<Record<number, string>>({});
+  const [agentPromptOverrides, setAgentPromptOverrides] = useState<Record<string, string>>(loadAgentPrompts);
+  const [improvementSuggestion, setImprovementSuggestion] = useState<{
+    agentId: string;
+    agentName: string;
+    prompt: string;
+  } | null>(null);
+  const [editedSuggestion, setEditedSuggestion] = useState("");
+  const [improving, setImproving] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
@@ -405,6 +422,82 @@ export default function Home() {
     }
   }
 
+  async function triggerImprovement(agentId: string) {
+    const agent = getAgentById(agentId);
+    if (!agent || improving) return;
+
+    const currentPrompt = agentPromptOverrides[agentId] ?? agent.systemPrompt;
+    const allFeedbacks = getFeedbacksByAgent(agentId);
+    const liked = allFeedbacks.filter((f) => f.feedback === "like").map((f) => f.messageText).slice(-5);
+    const disliked = allFeedbacks.filter((f) => f.feedback === "dislike").map((f) => f.messageText).slice(-5);
+
+    setImproving(true);
+    try {
+      const res = await fetch("/api/improve-prompt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId, agentName: agent.name, currentPrompt, liked, disliked }),
+      });
+      const data = await res.json();
+      if (data.improvedPrompt) {
+        setImprovementSuggestion({ agentId, agentName: agent.name, prompt: data.improvedPrompt });
+        setEditedSuggestion(data.improvedPrompt);
+      }
+    } catch {
+      // silently ignore
+    } finally {
+      setImproving(false);
+    }
+  }
+
+  function handleFeedback(
+    messageIndex: number,
+    messageText: string,
+    feedback: "like" | "dislike",
+    agentId: string | null
+  ) {
+    // Toggle off if same feedback clicked again
+    const current = feedbacks[messageIndex];
+    const newFeedback = current === feedback ? undefined : feedback;
+
+    setFeedbacks((prev) => {
+      const updated = { ...prev };
+      if (newFeedback === undefined) {
+        delete updated[messageIndex];
+      } else {
+        updated[messageIndex] = newFeedback;
+      }
+      return updated;
+    });
+
+    if (newFeedback === undefined) return;
+
+    saveFeedback({
+      id: crypto.randomUUID(),
+      conversationId,
+      messageIndex,
+      feedback: newFeedback,
+      messageText: messageText.slice(0, 500),
+      agentId,
+      timestamp: Date.now(),
+    });
+
+    // Trigger improvement after 3 dislikes for an agent
+    if (newFeedback === "dislike" && agentId && routingEnabled) {
+      const agentDislikes = getFeedbacksByAgent(agentId).filter((f) => f.feedback === "dislike");
+      if (agentDislikes.length >= 3 && !improvementSuggestion) {
+        triggerImprovement(agentId);
+      }
+    }
+  }
+
+  function applyImprovement() {
+    if (!improvementSuggestion) return;
+    saveAgentPrompt(improvementSuggestion.agentId, editedSuggestion);
+    setAgentPromptOverrides((prev) => ({ ...prev, [improvementSuggestion.agentId]: editedSuggestion }));
+    setImprovementSuggestion(null);
+  }
+
   async function send() {
     const text = input.trim();
     if (!text || loading) return;
@@ -434,7 +527,7 @@ export default function Home() {
 
         const agent = getAgentById(resolvedClassification.category);
         if (agent) {
-          agentSystemPrompt = agent.systemPrompt;
+          agentSystemPrompt = agentPromptOverrides[agent.id] ?? agent.systemPrompt;
           agentModelId = agent.modelId;
         }
       } catch {
@@ -444,7 +537,12 @@ export default function Home() {
       }
     }
 
-    await callAPI(newMessages, newMessages.length, agentModelId, agentSystemPrompt);
+    const assistantMsgIndex = newMessages.length;
+    if (routingEnabled && resolvedClassification) {
+      setMessageAgents((prev) => ({ ...prev, [assistantMsgIndex]: resolvedClassification!.category }));
+    }
+
+    await callAPI(newMessages, assistantMsgIndex, agentModelId, agentSystemPrompt);
 
     // Save ticket after response completes
     if (routingEnabled && resolvedClassification) {
@@ -763,6 +861,33 @@ export default function Home() {
                       {/* Divider */}
                       <span className="w-px h-3 bg-gray-600" />
 
+                      {/* Like/Dislike buttons */}
+                      <button
+                        onClick={() => handleFeedback(i, textOf(msg), "like", messageAgents[i] ?? null)}
+                        className={`transition-colors ${
+                          feedbacks[i] === "like" ? "text-green-400" : "text-gray-500 hover:text-gray-300"
+                        }`}
+                        title="Полезный ответ"
+                      >
+                        <svg className="w-3.5 h-3.5" fill={feedbacks[i] === "like" ? "currentColor" : "none"} viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M14 10h4.764a2 2 0 011.789 2.894l-3.5 7A2 2 0 0115.263 21h-4.017c-.163 0-.326-.02-.485-.06L7 20m7-10V5a2 2 0 00-2-2h-.095c-.5 0-.905.405-.905.905 0 .714-.211 1.412-.608 2.006L7 11v9m7-10h-2M7 20H5a2 2 0 01-2-2v-6a2 2 0 012-2h2.5" />
+                        </svg>
+                      </button>
+                      <button
+                        onClick={() => handleFeedback(i, textOf(msg), "dislike", messageAgents[i] ?? null)}
+                        className={`transition-colors ${
+                          feedbacks[i] === "dislike" ? "text-red-400" : "text-gray-500 hover:text-gray-300"
+                        }`}
+                        title="Плохой ответ"
+                      >
+                        <svg className="w-3.5 h-3.5" fill={feedbacks[i] === "dislike" ? "currentColor" : "none"} viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 14H5.236a2 2 0 01-1.789-2.894l3.5-7A2 2 0 018.736 3h4.018c.163 0 .326.02.485.06L17 4m-7 10v2a2 2 0 002 2h.095c.5 0 .905-.405.905-.905 0-.714.211-1.412.608-2.006L17 13V4m-7 10h2m5-10h2a2 2 0 012 2v6a2 2 0 01-2 2h-2.5" />
+                        </svg>
+                      </button>
+
+                      {/* Divider */}
+                      <span className="w-px h-3 bg-gray-600" />
+
                       {/* Regenerate button */}
                       <button
                         onClick={() => regenerate(i)}
@@ -810,6 +935,59 @@ export default function Home() {
       {ttsError && (
         <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-red-900/90 border border-red-700 text-red-200 text-sm px-4 py-2.5 rounded-xl shadow-lg z-50">
           {ttsError}
+        </div>
+      )}
+
+      {/* Prompt improvement banner */}
+      {improving && (
+        <div className="border-t border-amber-800/40 bg-amber-900/10 px-4 py-3">
+          <div className="max-w-3xl mx-auto flex items-center gap-2 text-amber-400 text-xs">
+            <svg className="w-3.5 h-3.5 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+            </svg>
+            Анализирую обратную связь и улучшаю промпт агента...
+          </div>
+        </div>
+      )}
+      {improvementSuggestion && !improving && (
+        <div className="border-t border-amber-800/50 bg-amber-900/15 px-4 py-3">
+          <div className="max-w-3xl mx-auto">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-medium text-amber-400">
+                ✨ Предложение по улучшению промпта агента «{improvementSuggestion.agentName}»
+              </p>
+              <button
+                onClick={() => setImprovementSuggestion(null)}
+                className="text-gray-500 hover:text-gray-300 transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <textarea
+              value={editedSuggestion}
+              onChange={(e) => setEditedSuggestion(e.target.value)}
+              rows={4}
+              className="w-full bg-gray-900 border border-amber-700/40 text-gray-200 text-xs rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-amber-600"
+            />
+            <div className="flex gap-2 mt-2">
+              <button
+                onClick={applyImprovement}
+                disabled={!editedSuggestion.trim()}
+                className="text-xs bg-amber-700 hover:bg-amber-600 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg transition-colors"
+              >
+                Применить
+              </button>
+              <button
+                onClick={() => setImprovementSuggestion(null)}
+                className="text-xs text-gray-400 hover:text-gray-200 px-3 py-1.5 rounded-lg border border-gray-600 hover:border-gray-500 transition-colors"
+              >
+                Отклонить
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

@@ -32,3 +32,13 @@ export interface DashboardMetrics {
   byCategory: Record<string, number>;
   avgResponseTime: number;
 }
+
+export interface MessageFeedback {
+  id: string;
+  conversationId: string;
+  messageIndex: number;
+  feedback: "like" | "dislike";
+  messageText: string;
+  agentId: string | null;
+  timestamp: number;
+}
