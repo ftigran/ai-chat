@@ -1,8 +1,9 @@
 import OpenAI from "openai";
 import { NextRequest } from "next/server";
 import { createMcpClient, listMcpToolsAsOpenAI, callMcpTool, type McpClient } from "@/lib/mcp";
+import { MODELS } from "@/constants/models";
 
-const GROQ_MODELS = ["llama-3.3-70b-versatile", "gemma2-9b-it", "mixtral-8x7b-32768"];
+const GROQ_MODELS = MODELS.map((m) => m.id);
 
 type OAIMessage = OpenAI.Chat.ChatCompletionMessageParam;
 
@@ -73,7 +74,7 @@ export async function POST(req: NextRequest) {
         }
 
         // Agentic loop (max 5 iterations to prevent infinite loops)
-        let currentMessages: OAIMessage[] = [...messages];
+        const currentMessages: OAIMessage[] = [...messages];
         let iterations = 0;
 
         while (iterations++ < 5) {
