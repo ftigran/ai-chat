@@ -6,7 +6,9 @@
       "Bash(npx create-next-app@15 ai-chat --typescript --tailwind --eslint --app --src-dir --import-alias \"@/*\" --use-npm --yes)",
       "Bash(npx create-next-app@15 /tmp/ai-chat-tmp --typescript --tailwind --eslint --app --src-dir --import-alias \"@/*\" --use-npm --yes)",
       "Bash(npm run:*)",
-      "mcp__Claude_Preview__preview_start"
+      "mcp__Claude_Preview__preview_start",
+      "WebFetch(domain:ai.google.dev)",
+      "Bash(npm list:*)"
     ]
   }
 }

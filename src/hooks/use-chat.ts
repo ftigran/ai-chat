@@ -9,21 +9,15 @@ export function useChat() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
 
-  async function send(model: string, activeServers: McpServer[]) {
-    const text = input.trim();
-    if (!text || loading) return;
-
-    const userMsg: Message = { role: "user", parts: [{ type: "text", content: text }] };
-    const newMessages = [...messages, userMsg];
-    setMessages(newMessages);
-    setInput("");
-    setLoading(true);
-
-    const assistantIndex = newMessages.length;
-    setMessages((prev) => [...prev, { role: "assistant", parts: [{ type: "text", content: "" }] }]);
-
+  async function callAPI(
+    msgsToSend: Message[],
+    assistantIndex: number,
+    model: string,
+    activeServers: McpServer[],
+    options?: { modelOverride?: string; systemPrompt?: string; ragEnabled?: boolean; mcpDisabled?: boolean }
+  ): Promise<void> {
     try {
-      const apiMessages = newMessages.map((m) => ({
+      const apiMessages = msgsToSend.map((m) => ({
         role: m.role,
         content: m.parts
           .filter((p): p is { type: "text"; content: string } => p.type === "text")
@@ -31,13 +25,18 @@ export function useChat() {
           .join(""),
       }));
 
+      const effectiveModel = options?.modelOverride ?? model;
+      const mcpDisabled = options?.mcpDisabled ?? false;
+
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: apiMessages,
-          model,
-          mcpServers: activeServers.map((s) => ({ url: s.url })),
+          model: effectiveModel,
+          mcpServers: mcpDisabled ? [] : activeServers.map((s) => ({ url: s.url })),
+          ...(options?.systemPrompt && { systemPrompt: options.systemPrompt }),
+          ragEnabled: options?.ragEnabled ?? false,
         }),
       });
 
@@ -69,12 +68,72 @@ export function useChat() {
     }
   }
 
-  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>, model: string, activeServers: McpServer[]) {
+  async function send(
+    model: string,
+    activeServers: McpServer[],
+    options?: { systemPrompt?: string; modelOverride?: string; ragEnabled?: boolean; mcpDisabled?: boolean }
+  ) {
+    const text = input.trim();
+    if (!text || loading) return;
+
+    const userMsg: Message = { role: "user", parts: [{ type: "text", content: text }] };
+    const newMessages = [...messages, userMsg];
+    setMessages([...newMessages, { role: "assistant", parts: [{ type: "text", content: "" }] }]);
+    setInput("");
+    setLoading(true);
+
+    const assistantIndex = newMessages.length;
+    await callAPI(newMessages, assistantIndex, model, activeServers, options);
+
+    return { userMsgIndex: newMessages.length - 1, assistantMsgIndex: assistantIndex, newMessages };
+  }
+
+  async function saveEdit(
+    index: number,
+    newText: string,
+    model: string,
+    activeServers: McpServer[],
+    options?: { systemPrompt?: string; ragEnabled?: boolean; mcpDisabled?: boolean }
+  ) {
+    if (!newText.trim() || loading) return;
+
+    const truncated = messages.slice(0, index);
+    const editedMsg: Message = { role: "user", parts: [{ type: "text", content: newText.trim() }] };
+    const newMessages = [...truncated, editedMsg];
+    setMessages([...newMessages, { role: "assistant", parts: [{ type: "text", content: "" }] }]);
+    setLoading(true);
+
+    await callAPI(newMessages, newMessages.length, model, activeServers, options);
+  }
+
+  async function regenerate(
+    assistantIdx: number,
+    model: string,
+    activeServers: McpServer[],
+    options?: { modelOverride?: string; systemPrompt?: string; ragEnabled?: boolean; mcpDisabled?: boolean }
+  ) {
+    if (loading) return;
+
+    const msgsToSend = messages.slice(0, assistantIdx);
+    setMessages((prev) => {
+      const updated = [...prev];
+      updated[assistantIdx] = { role: "assistant", parts: [{ type: "text", content: "" }] };
+      return updated;
+    });
+    setLoading(true);
+
+    await callAPI(msgsToSend, assistantIdx, model, activeServers, options);
+  }
+
+  function handleKeyDown(
+    e: React.KeyboardEvent<HTMLTextAreaElement>,
+    onSend: () => void
+  ) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      send(model, activeServers);
+      onSend();
     }
   }
 
-  return { messages, input, setInput, loading, send, handleKeyDown };
+  return { messages, setMessages, input, setInput, loading, send, saveEdit, regenerate, handleKeyDown };
 }

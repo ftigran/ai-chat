@@ -10,7 +10,10 @@
   },
   "dependencies": {
     "@google/genai": "^1.46.0",
+    "@llamaindex/openai": "^0.4.22",
+    "@llamaindex/readers": "^3.1.21",
     "@modelcontextprotocol/sdk": "^1.27.1",
+    "llamaindex": "^0.12.1",
     "next": "15.5.14",
     "openai": "^6.32.0",
     "react": "19.1.0",

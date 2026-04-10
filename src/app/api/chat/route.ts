@@ -3,16 +3,54 @@ import { NextRequest } from "next/server";
 import { createMcpClient, listMcpToolsAsOpenAI, callMcpTool, type McpClient } from "@/lib/mcp";
 import { MODELS } from "@/constants/models";
 
-const GROQ_MODELS = MODELS.map((m) => m.id);
+const VALID_IDS = new Set(MODELS.map((m) => m.id));
+
+function getClient(model: string): OpenAI | null {
+  const cfg = MODELS.find((m) => m.id === model);
+  if (!cfg) return null;
+
+  if (cfg.provider === "Google") {
+    return new OpenAI({
+      apiKey: process.env.GOOGLE_API_KEY!,
+      baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
+    });
+  }
+
+  return new OpenAI({
+    apiKey: process.env.GROQ_API_KEY!,
+    baseURL: "https://api.groq.com/openai/v1",
+  });
+}
 
 type OAIMessage = OpenAI.Chat.ChatCompletionMessageParam;
 
 export async function POST(req: NextRequest) {
-  const { messages, model, mcpServers } = await req.json() as {
+  const { messages, model, mcpServers, systemPrompt, ragEnabled } = await req.json() as {
     messages: OAIMessage[];
     model: string;
     mcpServers?: { url: string }[];
+    systemPrompt?: string;
+    ragEnabled?: boolean;
   };
+
+  // Prepend system prompt with optional RAG context
+  let finalSystemPrompt = systemPrompt;
+  let ragError: string | null = null;
+  if (ragEnabled) {
+    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+    const queryText = typeof lastUser?.content === "string" ? lastUser.content : "";
+    if (queryText) {
+      const { queryRAG, getLastIndexError } = await import("@/lib/rag-service");
+      const ctx = await queryRAG(queryText);
+      ragError = getLastIndexError();
+      if (ctx) {
+        finalSystemPrompt = ctx + (finalSystemPrompt ? `\n\n---\n\n${finalSystemPrompt}` : "");
+      }
+    }
+  }
+  if (finalSystemPrompt) {
+    messages.unshift({ role: "system", content: finalSystemPrompt });
+  }
 
   const encoder = new TextEncoder();
 
@@ -21,21 +59,21 @@ export async function POST(req: NextRequest) {
       const enqueue = (text: string) => controller.enqueue(encoder.encode(text));
 
       try {
-        if (!GROQ_MODELS.includes(model)) {
-          enqueue("Сейчас поддерживаются только модели Groq.");
+        if (ragError) {
+          enqueue(`[mcp_error:RAG: ${ragError}]`);
+        }
+
+        if (!VALID_IDS.has(model)) {
+          enqueue("Неизвестная модель.");
           return;
         }
 
-        const groq = new OpenAI({
-          apiKey: process.env.GROQ_API_KEY!,
-          baseURL: "https://api.groq.com/openai/v1",
-        });
-
+        const client = getClient(model)!;
         const activeServers = mcpServers?.filter((s) => s.url.trim());
 
         // No MCP — simple streaming
         if (!activeServers?.length) {
-          const response = await groq.chat.completions.create({ model, messages, stream: true });
+          const response = await client.chat.completions.create({ model, messages, stream: true });
           for await (const chunk of response) {
             const text = chunk.choices[0]?.delta?.content;
             if (text) enqueue(text);
@@ -49,12 +87,12 @@ export async function POST(req: NextRequest) {
 
         for (const server of activeServers) {
           try {
-            const client = await createMcpClient(server.url);
-            const { tools, nameMap } = await listMcpToolsAsOpenAI(client);
+            const mcpClient = await createMcpClient(server.url);
+            const { tools, nameMap } = await listMcpToolsAsOpenAI(mcpClient);
             for (const tool of tools) {
               const safeName = tool.function.name;
               if (!toolRoutes.has(safeName)) {
-                toolRoutes.set(safeName, { client, originalName: nameMap.get(safeName) ?? safeName });
+                toolRoutes.set(safeName, { client: mcpClient, originalName: nameMap.get(safeName) ?? safeName });
                 allTools.push(tool);
               }
             }
@@ -65,7 +103,7 @@ export async function POST(req: NextRequest) {
 
         if (!allTools.length) {
           enqueue("[mcp_error:Нет доступных инструментов]");
-          const response = await groq.chat.completions.create({ model, messages, stream: true });
+          const response = await client.chat.completions.create({ model, messages, stream: true });
           for await (const chunk of response) {
             const text = chunk.choices[0]?.delta?.content;
             if (text) enqueue(text);
@@ -78,7 +116,7 @@ export async function POST(req: NextRequest) {
         let iterations = 0;
 
         while (iterations++ < 5) {
-          const response = await groq.chat.completions.create({
+          const response = await client.chat.completions.create({
             model,
             messages: currentMessages,
             tools: allTools,
@@ -130,7 +168,15 @@ export async function POST(req: NextRequest) {
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : "Error";
-        enqueue(`Error: ${message}`);
+        if (message.includes("429")) {
+          enqueue("Превышен лимит запросов. Подождите немного и попробуйте снова.");
+        } else if (message.includes("401") || message.includes("403")) {
+          enqueue("Ошибка авторизации. Проверьте API-ключ.");
+        } else if (message.includes("404")) {
+          enqueue("Модель не найдена. Возможно, она больше недоступна.");
+        } else {
+          enqueue(`Ошибка: ${message}`);
+        }
       } finally {
         controller.close();
       }
