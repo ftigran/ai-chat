@@ -1,7 +1,6 @@
 import type { Ticket } from "@/lib/types";
 
 declare global {
-  // eslint-disable-next-line no-var
   var __serverTickets: Ticket[] | undefined;
 }
 

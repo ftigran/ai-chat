@@ -5,7 +5,6 @@ import type { SupportTicket } from "./types";
 const FILE_PATH = path.join(process.cwd(), "data", "support-tickets.json");
 
 declare global {
-  // eslint-disable-next-line no-var
   var __supportTickets: SupportTicket[] | undefined;
 }
 

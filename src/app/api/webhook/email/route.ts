@@ -5,7 +5,14 @@ import { generateResponse } from "@/lib/generate-response";
 import { getAgentById, DEFAULT_AGENT_ID } from "@/lib/agents";
 import { addServerTicket } from "@/lib/server-tickets";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+let _resend: Resend | null = null;
+function getResend() {
+  if (!_resend) {
+    if (!process.env.RESEND_API_KEY) throw new Error("RESEND_API_KEY is not set");
+    _resend = new Resend(process.env.RESEND_API_KEY);
+  }
+  return _resend;
+}
 const FROM_EMAIL = process.env.RESEND_FROM_EMAIL ?? "support@example.com";
 
 export async function POST(req: NextRequest) {
@@ -25,7 +32,7 @@ export async function POST(req: NextRequest) {
     const agent = getAgentById(classification.category) ?? getAgentById(DEFAULT_AGENT_ID)!;
     const response = await generateResponse(text, agent.systemPrompt, agent.modelId);
 
-    await resend.emails.send({
+    await getResend().emails.send({
       from: FROM_EMAIL,
       to: from,
       subject: `Re: ${subject ?? "Ваш запрос"}`,
