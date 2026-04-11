@@ -1,0 +1,11 @@
+[
+  {
+    "id": "e0f980e1-87b5-4c0e-9595-4c9734117237",
+    "timestamp": 1775824167651,
+    "title": "Тестовый баг",
+    "description": "Описание тестового бага для проверки",
+    "category": "bug",
+    "priority": "medium",
+    "status": "open"
+  }
+]

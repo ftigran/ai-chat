@@ -57,6 +57,16 @@ export function ChatHeader({
     <header className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
       <div className="flex items-center gap-3">
         <Link href="/dashboard" className="text-lg font-semibold hover:text-blue-400 transition-colors" title="Дашборд">AI Chat</Link>
+        <Link
+          href="/support"
+          className="flex items-center gap-1 text-xs text-gray-500 bg-gray-800/50 border border-gray-700 rounded-full px-2.5 py-1 hover:text-orange-400 hover:border-orange-700 transition-colors"
+          title="Поддержка — сообщить о баге"
+        >
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          Поддержка
+        </Link>
         {activeServers.length > 0 && (
           selectedModel.mcpDisabled ? (
             <span className="flex items-center gap-1 text-xs text-red-400 bg-red-900/30 border border-red-800 rounded-full px-2 py-0.5">

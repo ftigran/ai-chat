@@ -33,6 +33,16 @@ export interface DashboardMetrics {
   avgResponseTime: number;
 }
 
+export interface SupportTicket {
+  id: string;
+  timestamp: number;
+  title: string;
+  description: string;
+  category: "bug" | "feature" | "question" | "other";
+  priority: "low" | "medium" | "high";
+  status: "open" | "closed";
+}
+
 export interface MessageFeedback {
   id: string;
   conversationId: string;
