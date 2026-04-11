@@ -1,36 +1,107 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AI Chat
 
-## Getting Started
+AI-чат приложение с интеграцией Groq LLM, поддержкой MCP-инструментов и голосовым вводом/выводом.
 
-First, run the development server:
+## Возможности
+
+- **Мультимодельный чат** — поддержка нескольких моделей Groq (Llama 3.3 70B, Llama 3.1 8B, Qwen 3 32B)
+- **MCP (Model Context Protocol)** — подключение внешних инструментов через MCP-серверы
+- **Голосовой ввод** — распознавание речи через Groq Whisper
+- **Озвучка ответов** — Text-to-Speech через ElevenLabs
+- **Стриминг** — потоковый вывод ответов в реальном времени
+- **Агентный цикл** — до 5 итераций вызова инструментов перед финальным ответом
+
+## Стек технологий
+
+- **Next.js 15** (App Router, Turbopack)
+- **React 19**, TypeScript
+- **Tailwind CSS 4**
+- **Groq API** (OpenAI-совместимый)
+- **MCP SDK** для интеграции инструментов
+- **ElevenLabs** для TTS
+
+## Начало работы
+
+### Требования
+
+- Node.js 18+
+- npm
+
+### Установка
 
 ```bash
+# Клонировать репозиторий
+git clone https://github.com/ftigran/ai-chat.git
+cd ai-chat
+
+# Установить зависимости
+npm install
+
+# Скопировать и заполнить переменные окружения
+cp .env.example .env.local
+
+# Запустить dev-сервер
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Откройте [http://localhost:3000](http://localhost:3000) в браузере.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Переменные окружения
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Скопируйте `.env.example` в `.env.local` и заполните ключи API. Обязателен только `GROQ_API_KEY`, остальные — опциональны.
 
-## Learn More
+## Структура проекта
 
-To learn more about Next.js, take a look at the following resources:
+```
+src/
+├── app/                    # Next.js App Router
+│   ├── page.tsx           # Главная страница чата
+│   ├── layout.tsx         # Корневой layout
+│   └── api/               # API-роуты
+│       ├── chat/          # Стриминг чата с MCP
+│       ├── mcp-tools/     # Список MCP-инструментов
+│       ├── transcribe/    # Speech-to-Text (Groq Whisper)
+│       └── tts/           # Text-to-Speech (ElevenLabs)
+├── components/            # React-компоненты
+│   ├── chat-header.tsx    # Шапка с выбором модели и MCP
+│   ├── chat-input.tsx     # Поле ввода, голос, отправка
+│   ├── message-bubble.tsx # Пузырь сообщения с TTS
+│   ├── message-content.tsx# Рендер частей сообщения
+│   ├── mcp-settings.tsx   # Настройки MCP-серверов
+│   └── empty-state.tsx    # Заглушка пустого чата
+├── hooks/                 # Кастомные хуки
+│   ├── use-chat.ts        # Логика отправки/стриминга
+│   ├── use-voice.ts       # Запись и озвучка
+│   ├── use-mcp-servers.ts # Управление MCP-серверами
+│   ├── use-auto-scroll.ts # Автоскролл
+│   └── use-click-outside.ts # Клик за пределами элемента
+├── constants/             # Константы
+│   └── models.ts          # Доступные модели
+├── types/                 # TypeScript-типы
+│   └── chat.ts            # McpServer, Message, MessagePart
+└── lib/                   # Утилиты
+    ├── mcp.ts             # MCP-клиент и вызов инструментов
+    └── parse-message.ts   # Парсинг частей сообщения
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## MCP-интеграция
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Нажмите на иконку настроек в шапке, чтобы добавить MCP-серверы. После подключения LLM получит доступ к инструментам сервера и сможет вызывать их автоматически.
 
-## Deploy on Vercel
+## API-роуты
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+| Роут | Метод | Описание |
+|------|-------|----------|
+| `/api/chat` | POST | Стриминг чата с опциональным MCP-циклом |
+| `/api/mcp-tools` | POST | Список инструментов MCP-сервера |
+| `/api/transcribe` | POST | Распознавание речи (Groq Whisper) |
+| `/api/tts` | POST | Синтез речи (ElevenLabs) |
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Скрипты
+
+```bash
+npm run dev    # Dev-сервер с Turbopack
+npm run build  # Продакшн-сборка
+npm run start  # Запуск продакшн-сервера
+npm run lint   # Линтинг
+```

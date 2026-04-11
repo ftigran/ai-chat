@@ -1,543 +1,319 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
-
-const MODELS = [
-  { id: "llama-3.3-70b-versatile", label: "Llama 3.3 70B", provider: "Groq" },
-  { id: "gemma2-9b-it", label: "Gemma 2 9B", provider: "Groq" },
-  { id: "mixtral-8x7b-32768", label: "Mixtral 8x7B", provider: "Groq" },
-];
-
-type McpServer = { id: string; name: string; url: string; enabled: boolean };
-
-type MessagePart =
-  | { type: "text"; content: string }
-  | { type: "tool_call"; name: string }
-  | { type: "mcp_error"; message: string };
-
-type Message = { role: "user" | "assistant"; parts: MessagePart[] };
-
-function parseMessageParts(raw: string): MessagePart[] {
-  const parts: MessagePart[] = [];
-  const regex = /\[(tool|mcp_error):([^\]]+)\]/g;
-  let lastIndex = 0;
-  let match;
-
-  while ((match = regex.exec(raw)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push({ type: "text", content: raw.slice(lastIndex, match.index) });
-    }
-    if (match[1] === "tool") {
-      parts.push({ type: "tool_call", name: match[2] });
-    } else {
-      parts.push({ type: "mcp_error", message: match[2] });
-    }
-    lastIndex = match.index + match[0].length;
-  }
-
-  if (lastIndex < raw.length) {
-    parts.push({ type: "text", content: raw.slice(lastIndex) });
-  }
-
-  return parts.length > 0 ? parts : [{ type: "text", content: raw }];
-}
-
-function MessageContent({ parts, streaming }: { parts: MessagePart[]; streaming?: boolean }) {
-  return (
-    <div>
-      {parts.map((part, i) => {
-        if (part.type === "tool_call") {
-          return (
-            <div key={i} className="inline-flex items-center gap-1.5 bg-emerald-900/40 border border-emerald-700/50 text-emerald-400 text-xs px-2 py-1 rounded-md my-1 mr-1">
-              <svg className="w-3 h-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-              {part.name}
-            </div>
-          );
-        }
-        if (part.type === "mcp_error") {
-          return (
-            <div key={i} className="inline-flex items-center gap-1.5 bg-red-900/40 border border-red-700/50 text-red-400 text-xs px-2 py-1 rounded-md my-1 mr-1">
-              {part.message}
-            </div>
-          );
-        }
-        const isLast = i === parts.length - 1;
-        return (
-          <span key={i} className="whitespace-pre-wrap leading-relaxed">
-            {part.content}
-            {isLast && streaming && (
-              <span className="inline-block w-1.5 h-4 bg-gray-400 ml-1 animate-pulse rounded-sm" />
-            )}
-          </span>
-        );
-      })}
-    </div>
-  );
-}
-
-function McpSettings({
-  servers,
-  onChange,
-  onClose,
-}: {
-  servers: McpServer[];
-  onChange: (servers: McpServer[]) => void;
-  onClose: () => void;
-}) {
-  const [newName, setNewName] = useState("");
-  const [newUrl, setNewUrl] = useState("");
-
-  function add() {
-    if (!newUrl.trim()) return;
-    const server: McpServer = {
-      id: crypto.randomUUID(),
-      name: newName.trim() || new URL(newUrl.trim()).hostname,
-      url: newUrl.trim(),
-      enabled: true,
-    };
-    onChange([...servers, server]);
-    setNewName("");
-    setNewUrl("");
-  }
-
-  function toggle(id: string) {
-    onChange(servers.map((s) => (s.id === id ? { ...s, enabled: !s.enabled } : s)));
-  }
-
-  function remove(id: string) {
-    onChange(servers.filter((s) => s.id !== id));
-  }
-
-  return (
-    <div className="absolute right-0 top-full mt-2 w-[420px] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-4 z-50">
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-sm font-semibold text-gray-100">MCP Серверы</h2>
-        <button onClick={onClose} className="text-gray-500 hover:text-gray-300">
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
-      </div>
-
-      <p className="text-xs text-gray-400 mb-3">
-        Добавьте любые MCP серверы. ЛЛМ получит доступ к их инструментам.
-      </p>
-
-      {/* Server list */}
-      {servers.length > 0 && (
-        <div className="space-y-2 mb-3">
-          {servers.map((s) => (
-            <div key={s.id} className={`flex items-center gap-2 p-2 rounded-lg border ${s.enabled ? "border-gray-600 bg-gray-800" : "border-gray-700 bg-gray-850 opacity-60"}`}>
-              <button
-                onClick={() => toggle(s.id)}
-                className={`w-8 h-4 rounded-full transition-colors flex-shrink-0 ${s.enabled ? "bg-emerald-600" : "bg-gray-600"}`}
-              >
-                <span className={`block w-3 h-3 rounded-full bg-white mx-auto transition-transform ${s.enabled ? "translate-x-1" : "-translate-x-1"}`} />
-              </button>
-              <div className="flex-1 min-w-0">
-                <div className="text-xs font-medium text-gray-200 truncate">{s.name}</div>
-                <div className="text-xs text-gray-500 truncate">{s.url}</div>
-              </div>
-              <button onClick={() => remove(s.id)} className="text-gray-600 hover:text-red-400 flex-shrink-0">
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Add new */}
-      <div className="border-t border-gray-700 pt-3 space-y-2">
-        <input
-          type="text"
-          placeholder="Название (необязательно)"
-          value={newName}
-          onChange={(e) => setNewName(e.target.value)}
-          className="w-full bg-gray-800 border border-gray-700 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600 text-gray-100"
-        />
-        <div className="flex gap-2">
-          <input
-            type="url"
-            placeholder="https://mcp.zapier.com/api/mcp/s/..."
-            value={newUrl}
-            onChange={(e) => setNewUrl(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && add()}
-            className="flex-1 bg-gray-800 border border-gray-700 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600 text-gray-100"
-          />
-          <button
-            onClick={add}
-            disabled={!newUrl.trim()}
-            className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-sm px-3 py-2 rounded-lg transition-colors"
-          >
-            Добавить
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+import { useState, useCallback, useEffect } from "react";
+import { MODELS } from "@/constants/models";
+import { getAgentById } from "@/lib/agents";
+import { saveTicket } from "@/lib/ticket-store";
+import { saveFeedback, getFeedbacksByAgent, saveAgentPrompt, loadAgentPrompts } from "@/lib/feedback-store";
+import { textOf } from "@/lib/parse-message";
+import type { Classification, Ticket } from "@/lib/types";
+import { useMcpServers } from "@/hooks/use-mcp-servers";
+import { useChat } from "@/hooks/use-chat";
+import { useVoice } from "@/hooks/use-voice";
+import { useAutoScroll } from "@/hooks/use-auto-scroll";
+import { ChatHeader } from "@/components/chat-header";
+import { ChatInput } from "@/components/chat-input";
+import { EmptyState } from "@/components/empty-state";
+import { MessageBubble } from "@/components/message-bubble";
 
 export default function Home() {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState("");
   const [model, setModel] = useState(MODELS[0].id);
-  const [loading, setLoading] = useState(false);
-  const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [showSettings, setShowSettings] = useState(false);
-  const [recording, setRecording] = useState(false);
-  const [transcribing, setTranscribing] = useState(false);
-  const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
-  const [ttsError, setTtsError] = useState<string | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const settingsRef = useRef<HTMLDivElement>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  // Routing
+  const [routingEnabled, setRoutingEnabled] = useState(false);
+  const [classifying, setClassifying] = useState(false);
+  const [classifications, setClassifications] = useState<Record<number, Classification>>({});
+  const [conversationId] = useState(() => crypto.randomUUID());
+  // RAG
+  const [ragEnabled, setRagEnabled] = useState(false);
+  const [showRagSettings, setShowRagSettings] = useState(false);
+  const [ragUploadStatus, setRagUploadStatus] = useState<string | null>(null);
+  const [ragUploading, setRagUploading] = useState(false);
+  const [ragFileReady, setRagFileReady] = useState(false);
+  // Feedback
+  const [feedbacks, setFeedbacks] = useState<Record<number, "like" | "dislike">>({});
+  const [messageAgents, setMessageAgents] = useState<Record<number, string>>({});
+  const [agentPromptOverrides, setAgentPromptOverrides] = useState<Record<string, string>>(loadAgentPrompts);
+  const [improvementSuggestion, setImprovementSuggestion] = useState<{
+    agentId: string; agentName: string; prompt: string;
+  } | null>(null);
+  const [editedSuggestion, setEditedSuggestion] = useState("");
+  const [improving, setImproving] = useState(false);
+  // Regen model per message
+  const [regenModel, setRegenModel] = useState<Record<number, string>>({});
 
   useEffect(() => {
-    const saved = localStorage.getItem("mcpServers");
-    if (saved) {
-      try { setMcpServers(JSON.parse(saved)); } catch {}
-    }
+    fetch("/api/upload-pdf")
+      .then((res) => res.json())
+      .then((data) => { if (data.indexReady) setRagFileReady(true); })
+      .catch(() => {});
   }, []);
 
-  function saveServers(servers: McpServer[]) {
-    setMcpServers(servers);
-    localStorage.setItem("mcpServers", JSON.stringify(servers));
-  }
-
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    if (!ragFileReady && ragEnabled) setRagEnabled(false);
+  }, [ragFileReady, ragEnabled]);
 
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
-        setShowSettings(false);
-      }
-    }
-    if (showSettings) document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [showSettings]);
-
-  const activeServers = mcpServers.filter((s) => s.enabled);
-
-  async function toggleRecording() {
-    if (recording) {
-      mediaRecorderRef.current?.stop();
-      return;
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
-      audioChunksRef.current = [];
-
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) audioChunksRef.current.push(e.data);
-      };
-
-      mediaRecorder.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop());
-        setRecording(false);
-        setTranscribing(true);
-        try {
-          const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-          const formData = new FormData();
-          formData.append("file", blob, "audio.webm");
-          const res = await fetch("/api/transcribe", { method: "POST", body: formData });
-          const data = await res.json();
-          if (data.text) setInput((prev) => prev + (prev ? " " : "") + data.text);
-        } finally {
-          setTranscribing(false);
-        }
-      };
-
-      mediaRecorder.start();
-      setRecording(true);
-    } catch {
-      alert("Не удалось получить доступ к микрофону");
-    }
-  }
-
-  async function speakMessage(index: number, parts: MessagePart[]) {
-    if (speakingIndex === index) {
-      currentAudioRef.current?.pause();
-      currentAudioRef.current = null;
-      setSpeakingIndex(null);
-      return;
-    }
-
-    const text = parts
-      .filter((p): p is { type: "text"; content: string } => p.type === "text")
-      .map((p) => p.content)
-      .join("")
-      .trim();
-
-    if (!text) return;
-
-    setSpeakingIndex(index);
-    try {
-      const res = await fetch("/api/tts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-      if (!res.ok) {
-        const msg = res.status === 402
-          ? "Озвучка недоступна: требуется платный план ElevenLabs"
-          : `Ошибка озвучки (${res.status})`;
-        setTtsError(msg);
-        setTimeout(() => setTtsError(null), 4000);
-        setSpeakingIndex(null);
-        return;
-      }
-      const blob = await res.blob();
-      const audio = new Audio(URL.createObjectURL(blob));
-      currentAudioRef.current = audio;
-      audio.onended = () => setSpeakingIndex(null);
-      audio.onerror = () => setSpeakingIndex(null);
-      audio.play();
-    } catch {
-      setTtsError("Не удалось подключиться к сервису озвучки");
-      setTimeout(() => setTtsError(null), 4000);
-      setSpeakingIndex(null);
-    }
-  }
-
-  async function send() {
-    const text = input.trim();
-    if (!text || loading) return;
-
-    const userMsg: Message = { role: "user", parts: [{ type: "text", content: text }] };
-    const newMessages = [...messages, userMsg];
-    setMessages(newMessages);
-    setInput("");
-    setLoading(true);
-
-    const assistantIndex = newMessages.length;
-    setMessages((prev) => [...prev, { role: "assistant", parts: [{ type: "text", content: "" }] }]);
-
-    try {
-      const apiMessages = newMessages.map((m) => ({
-        role: m.role,
-        content: m.parts
-          .filter((p): p is { type: "text"; content: string } => p.type === "text")
-          .map((p) => p.content)
-          .join(""),
-      }));
-
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: apiMessages,
-          model,
-          mcpServers: activeServers.map((s) => ({ url: s.url })),
-        }),
-      });
-
-      if (!res.body) throw new Error("No response body");
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let raw = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        raw += decoder.decode(value, { stream: true });
-        setMessages((prev) => {
-          const updated = [...prev];
-          updated[assistantIndex] = { role: "assistant", parts: parseMessageParts(raw) };
-          return updated;
-        });
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Error";
-      setMessages((prev) => {
-        const updated = [...prev];
-        updated[assistantIndex] = { role: "assistant", parts: [{ type: "text", content: `Error: ${msg}` }] };
-        return updated;
-      });
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      send();
-    }
-  }
+  const { servers, activeServers, saveServers } = useMcpServers();
+  const { messages, input, setInput, loading, send, saveEdit, regenerate, handleKeyDown } = useChat();
+  const { recording, transcribing, speakingIndex, ttsError, toggleRecording, speakMessage } = useVoice(
+    (text) => setInput((prev) => prev + (prev ? " " : "") + text)
+  );
+  const bottomRef = useAutoScroll([messages]);
 
   const selectedModel = MODELS.find((m) => m.id === model)!;
 
+  async function triggerImprovement(agentId: string) {
+    const agent = getAgentById(agentId);
+    if (!agent || improving) return;
+    const currentPrompt = agentPromptOverrides[agentId] ?? agent.systemPrompt;
+    const allFeedbacks = getFeedbacksByAgent(agentId);
+    const liked = allFeedbacks.filter((f) => f.feedback === "like").map((f) => f.messageText).slice(-5);
+    const disliked = allFeedbacks.filter((f) => f.feedback === "dislike").map((f) => f.messageText).slice(-5);
+    setImproving(true);
+    try {
+      const res = await fetch("/api/improve-prompt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId, agentName: agent.name, currentPrompt, liked, disliked }),
+      });
+      const data = await res.json();
+      if (data.improvedPrompt) {
+        setImprovementSuggestion({ agentId, agentName: agent.name, prompt: data.improvedPrompt });
+        setEditedSuggestion(data.improvedPrompt);
+      }
+    } catch { /* ignore */ } finally { setImproving(false); }
+  }
+
+  function handleFeedback(messageIndex: number, feedback: "like" | "dislike") {
+    const current = feedbacks[messageIndex];
+    const newFeedback = current === feedback ? undefined : feedback;
+    setFeedbacks((prev) => {
+      const updated = { ...prev };
+      if (newFeedback === undefined) delete updated[messageIndex];
+      else updated[messageIndex] = newFeedback;
+      return updated;
+    });
+    if (newFeedback === undefined) return;
+    const agentId = messageAgents[messageIndex] ?? null;
+    saveFeedback({
+      id: crypto.randomUUID(), conversationId, messageIndex,
+      feedback: newFeedback, messageText: textOf(messages[messageIndex]).slice(0, 500),
+      agentId, timestamp: Date.now(),
+    });
+    if (newFeedback === "dislike" && agentId && routingEnabled) {
+      const agentDislikes = getFeedbacksByAgent(agentId).filter((f) => f.feedback === "dislike");
+      if (agentDislikes.length >= 3 && !improvementSuggestion) triggerImprovement(agentId);
+    }
+  }
+
+  function applyImprovement() {
+    if (!improvementSuggestion) return;
+    saveAgentPrompt(improvementSuggestion.agentId, editedSuggestion);
+    setAgentPromptOverrides((prev) => ({ ...prev, [improvementSuggestion.agentId]: editedSuggestion }));
+    setImprovementSuggestion(null);
+  }
+
+  const handleSend = useCallback(async () => {
+    let agentSystemPrompt: string | undefined;
+    let agentModelId: string | undefined;
+    let resolvedClassification: Classification | undefined;
+    const startTime = Date.now();
+    const text = input.trim();
+
+    if (routingEnabled && text) {
+      setClassifying(true);
+      try {
+        const res = await fetch("/api/classify", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: text }),
+        });
+        resolvedClassification = (await res.json()) as Classification;
+        const userIdx = messages.length;
+        setClassifications((prev) => ({ ...prev, [userIdx]: resolvedClassification! }));
+        const agent = getAgentById(resolvedClassification.category);
+        if (agent) {
+          agentSystemPrompt = agentPromptOverrides[agent.id] ?? agent.systemPrompt;
+          agentModelId = agent.modelId;
+        }
+      } catch { /* continue without routing */ } finally { setClassifying(false); }
+    }
+
+    const result = await send(model, activeServers, {
+      systemPrompt: agentSystemPrompt,
+      modelOverride: agentModelId,
+      ragEnabled,
+      mcpDisabled: selectedModel.mcpDisabled,
+    });
+
+    if (result && routingEnabled && resolvedClassification) {
+      setMessageAgents((prev) => ({ ...prev, [result.assistantMsgIndex]: resolvedClassification!.category }));
+      const agent = getAgentById(resolvedClassification.category);
+      const ticket: Ticket = {
+        id: crypto.randomUUID(), timestamp: Date.now(), userMessage: text,
+        classification: resolvedClassification, agentId: resolvedClassification.category,
+        agentName: agent?.name ?? "FAQ", responsePreview: "",
+        responseTime: Date.now() - startTime, conversationId, channel: "web",
+      };
+      saveTicket(ticket);
+    }
+  }, [input, model, activeServers, routingEnabled, ragEnabled, selectedModel, messages, agentPromptOverrides, send, conversationId]);
+
+  const handleEdit = useCallback((index: number, newText: string) => {
+    saveEdit(index, newText, model, activeServers, { ragEnabled, mcpDisabled: selectedModel.mcpDisabled });
+  }, [saveEdit, model, activeServers, ragEnabled, selectedModel]);
+
+  const handleRegenerate = useCallback((index: number) => {
+    regenerate(index, model, activeServers, {
+      modelOverride: regenModel[index],
+      ragEnabled,
+      mcpDisabled: selectedModel.mcpDisabled,
+    });
+  }, [regenerate, model, activeServers, regenModel, ragEnabled, selectedModel]);
+
+  const handleSpeak = useCallback((index: number) => {
+    speakMessage(index, messages[index].parts);
+  }, [speakMessage, messages]);
+
+  async function handleRagUpload(file: File) {
+    setRagUploading(true);
+    setRagUploadStatus(null);
+    try {
+      const fd = new FormData();
+      fd.append("pdf", file);
+      const res = await fetch("/api/upload-pdf", { method: "POST", body: fd });
+      const data = await res.json();
+      if (res.ok) {
+        setRagUploadStatus(`Загружен и проиндексирован: ${file.name}`);
+        setRagFileReady(true);
+      } else {
+        setRagUploadStatus(`Ошибка: ${data.error}`);
+      }
+    } catch { setRagUploadStatus("Ошибка загрузки"); }
+    finally { setRagUploading(false); }
+  }
+
   return (
     <div className="flex flex-col h-screen bg-gray-950 text-gray-100">
-      {/* Header */}
-      <header className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
-        <div className="flex items-center gap-3">
-          <h1 className="text-lg font-semibold">AI Chat</h1>
-          {activeServers.length > 0 && (
-            <span className="flex items-center gap-1 text-xs text-emerald-400 bg-emerald-900/30 border border-emerald-800 rounded-full px-2 py-0.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block" />
-              {activeServers.length} MCP
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-gray-400">{selectedModel.provider}</span>
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            className="bg-gray-800 border border-gray-700 text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            {MODELS.map((m) => (
-              <option key={m.id} value={m.id}>{m.label}</option>
-            ))}
-          </select>
+      <ChatHeader
+        model={model}
+        onModelChange={setModel}
+        activeServers={activeServers}
+        mcpServers={servers}
+        onServersChange={saveServers}
+        showSettings={showSettings}
+        onToggleSettings={() => setShowSettings((v) => !v)}
+        routingEnabled={routingEnabled}
+        onToggleRouting={() => setRoutingEnabled((v) => !v)}
+        ragEnabled={ragEnabled}
+        ragFileReady={ragFileReady}
+        onToggleRag={() => { if (ragFileReady) setRagEnabled((v) => !v); }}
+        showRagSettings={showRagSettings}
+        onToggleRagSettings={() => setShowRagSettings((v) => !v)}
+        ragUploading={ragUploading}
+        ragUploadStatus={ragUploadStatus}
+        onRagUpload={handleRagUpload}
+      />
 
-          <div className="relative" ref={settingsRef}>
-            <button
-              onClick={() => setShowSettings((v) => !v)}
-              className={`p-1.5 rounded-lg transition-colors ${showSettings ? "bg-gray-700 text-white" : "text-gray-400 hover:text-white hover:bg-gray-800"}`}
-              title="MCP Серверы"
-            >
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
-            </button>
-
-            {showSettings && (
-              <McpSettings
-                servers={mcpServers}
-                onChange={saveServers}
-                onClose={() => setShowSettings(false)}
-              />
-            )}
-          </div>
-        </div>
-      </header>
-
-      {/* Messages */}
       <main className="flex-1 overflow-y-auto px-4 py-6">
-        {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full text-gray-500 gap-2">
-            <svg className="w-12 h-12 opacity-20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-            </svg>
-            <p className="text-sm">Начните разговор</p>
-            {activeServers.length > 0 && (
-              <p className="text-xs text-emerald-500">{activeServers.length} MCP сервер(а) подключено</p>
-            )}
-          </div>
-        )}
+        {messages.length === 0 && <EmptyState activeServerCount={activeServers.length} />}
         <div className="max-w-3xl mx-auto space-y-4">
           {messages.map((msg, i) => (
-            <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div
-                className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm ${
-                  msg.role === "user"
-                    ? "bg-blue-600 text-white rounded-br-sm"
-                    : "bg-gray-800 text-gray-100 rounded-bl-sm"
-                }`}
-              >
-                <MessageContent
-                  parts={msg.parts}
-                  streaming={loading && msg.role === "assistant" && i === messages.length - 1}
-                />
-                {msg.role === "assistant" && !(loading && i === messages.length - 1) && (
-                  <button
-                    onClick={() => speakMessage(i, msg.parts)}
-                    className={`mt-2 flex items-center gap-1 text-xs transition-colors ${
-                      speakingIndex === i ? "text-blue-400" : "text-gray-500 hover:text-gray-300"
-                    }`}
-                    title={speakingIndex === i ? "Остановить" : "Озвучить"}
-                  >
-                    {speakingIndex === i ? (
-                      <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-                        <rect x="6" y="4" width="4" height="16" rx="1" />
-                        <rect x="14" y="4" width="4" height="16" rx="1" />
-                      </svg>
-                    ) : (
-                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15.536 8.464a5 5 0 010 7.072M12 6a7 7 0 010 12M9 9v6l4-3-4-3z" />
-                      </svg>
-                    )}
-                  </button>
-                )}
+            <MessageBubble
+              key={i}
+              message={msg}
+              index={i}
+              isStreaming={loading && msg.role === "assistant" && i === messages.length - 1}
+              isLoading={loading}
+              speakingIndex={speakingIndex}
+              onSpeak={handleSpeak}
+              onEdit={handleEdit}
+              onRegenerate={handleRegenerate}
+              onFeedback={handleFeedback}
+              onRegenModelChange={(idx, newModel) => {
+                setRegenModel((prev) => ({ ...prev, [idx]: newModel }));
+                const mcpDisabled = MODELS.find((m) => m.id === newModel)?.mcpDisabled ?? false;
+                regenerate(idx, model, activeServers, { modelOverride: newModel, ragEnabled, mcpDisabled });
+              }}
+              feedback={feedbacks[i]}
+              regenModel={regenModel[i]}
+              currentModel={model}
+              classification={classifications[i]}
+            />
+          ))}
+          {classifying && (
+            <div className="flex justify-start">
+              <div className="bg-violet-900/30 border border-violet-700/50 text-violet-300 text-xs px-3 py-2 rounded-xl flex items-center gap-2">
+                <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                </svg>
+                Классификация...
               </div>
             </div>
-          ))}
+          )}
           <div ref={bottomRef} />
         </div>
       </main>
 
-      {/* TTS error toast */}
       {ttsError && (
         <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-red-900/90 border border-red-700 text-red-200 text-sm px-4 py-2.5 rounded-xl shadow-lg z-50">
           {ttsError}
         </div>
       )}
 
-      {/* Input */}
-      <footer className="border-t border-gray-800 px-4 py-4">
-        <div className="max-w-3xl mx-auto flex gap-3 items-end">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={
-              activeServers.length > 0
-                ? `Напишите сообщение... MCP инструменты доступны (${activeServers.map((s) => s.name).join(", ")})`
-                : "Напишите сообщение... (Enter — отправить, Shift+Enter — новая строка)"
-            }
-            rows={1}
-            className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 max-h-40 overflow-y-auto"
-          />
-          <button
-            onClick={toggleRecording}
-            disabled={transcribing || loading}
-            title={recording ? "Остановить запись" : "Голосовой ввод"}
-            className={`rounded-xl px-4 py-3 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-              recording
-                ? "bg-red-600 hover:bg-red-500 text-white"
-                : "bg-gray-700 hover:bg-gray-600 text-gray-300"
-            }`}
-          >
-            {transcribing ? (
-              <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-              </svg>
-            ) : recording ? (
-              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                <rect x="6" y="6" width="12" height="12" rx="2" />
-              </svg>
-            ) : (
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-              </svg>
-            )}
-          </button>
-          <button
-            onClick={send}
-            disabled={!input.trim() || loading}
-            className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl px-4 py-3 transition-colors"
-          >
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+      {improving && (
+        <div className="border-t border-amber-800/40 bg-amber-900/10 px-4 py-3">
+          <div className="max-w-3xl mx-auto flex items-center gap-2 text-amber-400 text-xs">
+            <svg className="w-3.5 h-3.5 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
             </svg>
-          </button>
+            Анализирую обратную связь и улучшаю промпт агента...
+          </div>
         </div>
-      </footer>
+      )}
+      {improvementSuggestion && !improving && (
+        <div className="border-t border-amber-800/50 bg-amber-900/15 px-4 py-3">
+          <div className="max-w-3xl mx-auto">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-medium text-amber-400">
+                Предложение по улучшению промпта агента «{improvementSuggestion.agentName}»
+              </p>
+              <button onClick={() => setImprovementSuggestion(null)} className="text-gray-500 hover:text-gray-300 transition-colors">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <textarea
+              value={editedSuggestion}
+              onChange={(e) => setEditedSuggestion(e.target.value)}
+              rows={4}
+              className="w-full bg-gray-900 border border-amber-700/40 text-gray-200 text-xs rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-amber-600"
+            />
+            <div className="flex gap-2 mt-2">
+              <button onClick={applyImprovement} disabled={!editedSuggestion.trim()} className="text-xs bg-amber-700 hover:bg-amber-600 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg transition-colors">
+                Применить
+              </button>
+              <button onClick={() => setImprovementSuggestion(null)} className="text-xs text-gray-400 hover:text-gray-200 px-3 py-1.5 rounded-lg border border-gray-600 hover:border-gray-500 transition-colors">
+                Отклонить
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <ChatInput
+        input={input}
+        onInputChange={setInput}
+        onKeyDown={(e) => handleKeyDown(e, handleSend)}
+        onSend={handleSend}
+        onToggleRecording={toggleRecording}
+        recording={recording}
+        transcribing={transcribing}
+        loading={loading}
+        activeServers={activeServers}
+      />
     </div>
   );
 }
