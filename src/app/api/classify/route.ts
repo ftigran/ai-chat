@@ -9,6 +9,10 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     console.error("Classification error:", err);
     const { DEFAULT_AGENT_ID } = await import("@/lib/agents");
-    return NextResponse.json({ category: DEFAULT_AGENT_ID, confidence: 0, reasoning: "Classification failed" });
+    return NextResponse.json({
+      category: DEFAULT_AGENT_ID,
+      confidence: 0,
+      reasoning: "Classification failed",
+    });
   }
 }

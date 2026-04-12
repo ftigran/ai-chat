@@ -43,7 +43,7 @@ function cleanSchema(schema: Record<string, unknown>): Record<string, unknown> {
 }
 
 export async function listMcpToolsAsOpenAI(
-  client: Client
+  client: Client,
 ): Promise<{ tools: ReturnType<typeof buildTool>[]; nameMap: Map<string, string> }> {
   const { tools } = await client.listTools();
   const nameMap = new Map<string, string>(); // safe name → original name
@@ -51,7 +51,11 @@ export async function listMcpToolsAsOpenAI(
   const openaiTools = tools.map((tool) => {
     const safeName = sanitizeName(tool.name);
     nameMap.set(safeName, tool.name);
-    return buildTool(safeName, tool.description ?? "", cleanSchema(tool.inputSchema as Record<string, unknown>));
+    return buildTool(
+      safeName,
+      tool.description ?? "",
+      cleanSchema(tool.inputSchema as Record<string, unknown>),
+    );
   });
 
   return { tools: openaiTools, nameMap };
@@ -67,7 +71,7 @@ function buildTool(name: string, description: string, parameters: Record<string,
 export async function callMcpTool(
   client: Client,
   name: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
 ): Promise<string> {
   const result = await client.callTool({ name, arguments: args });
   const content = result.content as Array<{ type: string; text?: string }>;

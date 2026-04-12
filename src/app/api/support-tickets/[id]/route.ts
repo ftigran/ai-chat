@@ -4,7 +4,7 @@ import { updateSupportTicket, deleteSupportTicket } from "@/lib/server-support-t
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const body = await req.json();
-  const ticket = updateSupportTicket(id, { status: body.status });
+  const ticket = await updateSupportTicket(id, { status: body.status });
   if (!ticket) {
     return NextResponse.json({ error: "not found" }, { status: 404 });
   }
@@ -13,7 +13,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const ok = deleteSupportTicket(id);
+  const ok = await deleteSupportTicket(id);
   if (!ok) {
     return NextResponse.json({ error: "not found" }, { status: 404 });
   }

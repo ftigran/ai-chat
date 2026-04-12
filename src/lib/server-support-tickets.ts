@@ -1,4 +1,4 @@
-import fs from "fs";
+import fs from "fs/promises";
 import path from "path";
 import type { SupportTicket } from "./types";
 
@@ -8,10 +8,10 @@ declare global {
   var __supportTickets: SupportTicket[] | undefined;
 }
 
-function load(): SupportTicket[] {
+async function load(): Promise<SupportTicket[]> {
   if (globalThis.__supportTickets) return globalThis.__supportTickets;
   try {
-    const raw = fs.readFileSync(FILE_PATH, "utf-8");
+    const raw = await fs.readFile(FILE_PATH, "utf-8");
     const tickets = JSON.parse(raw) as SupportTicket[];
     globalThis.__supportTickets = tickets;
     return tickets;
@@ -21,39 +21,39 @@ function load(): SupportTicket[] {
   }
 }
 
-function persist(tickets: SupportTicket[]): void {
+async function persist(tickets: SupportTicket[]): Promise<void> {
   globalThis.__supportTickets = tickets;
-  fs.mkdirSync(path.dirname(FILE_PATH), { recursive: true });
-  fs.writeFileSync(FILE_PATH, JSON.stringify(tickets, null, 2));
+  await fs.mkdir(path.dirname(FILE_PATH), { recursive: true });
+  await fs.writeFile(FILE_PATH, JSON.stringify(tickets, null, 2));
 }
 
-export function getSupportTickets(): SupportTicket[] {
-  return [...load()];
+export async function getSupportTickets(): Promise<SupportTicket[]> {
+  return [...(await load())];
 }
 
-export function addSupportTicket(ticket: SupportTicket): void {
-  const tickets = load();
+export async function addSupportTicket(ticket: SupportTicket): Promise<void> {
+  const tickets = await load();
   tickets.push(ticket);
-  persist(tickets);
+  await persist(tickets);
 }
 
-export function updateSupportTicket(
+export async function updateSupportTicket(
   id: string,
   updates: Partial<Pick<SupportTicket, "status">>,
-): SupportTicket | null {
-  const tickets = load();
+): Promise<SupportTicket | null> {
+  const tickets = await load();
   const idx = tickets.findIndex((t) => t.id === id);
   if (idx === -1) return null;
   Object.assign(tickets[idx], updates);
-  persist(tickets);
+  await persist(tickets);
   return tickets[idx];
 }
 
-export function deleteSupportTicket(id: string): boolean {
-  const tickets = load();
+export async function deleteSupportTicket(id: string): Promise<boolean> {
+  const tickets = await load();
   const idx = tickets.findIndex((t) => t.id === id);
   if (idx === -1) return false;
   tickets.splice(idx, 1);
-  persist(tickets);
+  await persist(tickets);
   return true;
 }

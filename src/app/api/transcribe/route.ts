@@ -1,5 +1,6 @@
-import OpenAI from "openai";
 import { NextRequest } from "next/server";
+import { getGroqClient } from "@/lib/llm-clients";
+import { STT_MODEL } from "@/constants/config";
 
 export async function POST(req: NextRequest) {
   const formData = await req.formData();
@@ -9,14 +10,9 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: "No file provided" }, { status: 400 });
   }
 
-  const groq = new OpenAI({
-    apiKey: process.env.GROQ_API_KEY!,
-    baseURL: "https://api.groq.com/openai/v1",
-  });
-
-  const transcription = await groq.audio.transcriptions.create({
+  const transcription = await getGroqClient().audio.transcriptions.create({
     file,
-    model: "whisper-large-v3-turbo",
+    model: STT_MODEL,
   });
 
   return Response.json({ text: transcription.text });

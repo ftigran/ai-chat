@@ -2,30 +2,16 @@ import OpenAI from "openai";
 import { NextRequest } from "next/server";
 import { createMcpClient, listMcpToolsAsOpenAI, callMcpTool, type McpClient } from "@/lib/mcp";
 import { MODELS } from "@/constants/models";
+import { getClientForModel } from "@/lib/llm-clients";
+import { MAX_MCP_ITERATIONS } from "@/constants/config";
+import { classifyApiError } from "@/lib/api-error";
 
 const VALID_IDS = new Set(MODELS.map((m) => m.id));
-
-function getClient(model: string): OpenAI | null {
-  const cfg = MODELS.find((m) => m.id === model);
-  if (!cfg) return null;
-
-  if (cfg.provider === "Google") {
-    return new OpenAI({
-      apiKey: process.env.GOOGLE_API_KEY!,
-      baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
-    });
-  }
-
-  return new OpenAI({
-    apiKey: process.env.GROQ_API_KEY!,
-    baseURL: "https://api.groq.com/openai/v1",
-  });
-}
 
 type OAIMessage = OpenAI.Chat.ChatCompletionMessageParam;
 
 export async function POST(req: NextRequest) {
-  const { messages, model, mcpServers, systemPrompt, ragEnabled } = await req.json() as {
+  const { messages, model, mcpServers, systemPrompt, ragEnabled } = (await req.json()) as {
     messages: OAIMessage[];
     model: string;
     mcpServers?: { url: string }[];
@@ -68,7 +54,7 @@ export async function POST(req: NextRequest) {
           return;
         }
 
-        const client = getClient(model)!;
+        const client = getClientForModel(model);
         const activeServers = mcpServers?.filter((s) => s.url.trim());
 
         // No MCP — simple streaming
@@ -92,7 +78,10 @@ export async function POST(req: NextRequest) {
             for (const tool of tools) {
               const safeName = tool.function.name;
               if (!toolRoutes.has(safeName)) {
-                toolRoutes.set(safeName, { client: mcpClient, originalName: nameMap.get(safeName) ?? safeName });
+                toolRoutes.set(safeName, {
+                  client: mcpClient,
+                  originalName: nameMap.get(safeName) ?? safeName,
+                });
                 allTools.push(tool);
               }
             }
@@ -115,7 +104,7 @@ export async function POST(req: NextRequest) {
         const currentMessages: OAIMessage[] = [...messages];
         let iterations = 0;
 
-        while (iterations++ < 5) {
+        while (iterations++ < MAX_MCP_ITERATIONS) {
           const response = await client.chat.completions.create({
             model,
             messages: currentMessages,
@@ -138,7 +127,11 @@ export async function POST(req: NextRequest) {
           }
 
           // Reconstruct assistant message explicitly to avoid type mismatches
-          type RawToolCall = { id: string; type: string; function: { name: string; arguments: string } };
+          type RawToolCall = {
+            id: string;
+            type: string;
+            function: { name: string; arguments: string };
+          };
           const toolCalls = (msg.tool_calls as RawToolCall[]).map((tc) => ({
             id: tc.id,
             type: "function" as const,
@@ -157,26 +150,31 @@ export async function POST(req: NextRequest) {
 
             const route = toolRoutes.get(safeName);
             if (!route) {
-              currentMessages.push({ role: "tool", tool_call_id: toolCall.id, content: "Tool not found" });
+              currentMessages.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: "Tool not found",
+              });
               continue;
             }
 
-            const args = JSON.parse(toolCall.function.arguments || "{}");
+            let args: Record<string, unknown>;
+            try {
+              args = JSON.parse(toolCall.function.arguments || "{}");
+            } catch {
+              currentMessages.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: "Error: invalid tool arguments JSON",
+              });
+              continue;
+            }
             const result = await callMcpTool(route.client, route.originalName, args);
             currentMessages.push({ role: "tool", tool_call_id: toolCall.id, content: result });
           }
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Error";
-        if (message.includes("429")) {
-          enqueue("Превышен лимит запросов. Подождите немного и попробуйте снова.");
-        } else if (message.includes("401") || message.includes("403")) {
-          enqueue("Ошибка авторизации. Проверьте API-ключ.");
-        } else if (message.includes("404")) {
-          enqueue("Модель не найдена. Возможно, она больше недоступна.");
-        } else {
-          enqueue(`Ошибка: ${message}`);
-        }
+        enqueue(classifyApiError(err).message);
       } finally {
         controller.close();
       }

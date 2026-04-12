@@ -3,7 +3,7 @@ import { getSupportTickets, addSupportTicket } from "@/lib/server-support-ticket
 import type { SupportTicket } from "@/lib/types";
 
 export async function GET() {
-  return NextResponse.json({ tickets: getSupportTickets() });
+  return NextResponse.json({ tickets: await getSupportTickets() });
 }
 
 export async function POST(req: Request) {
@@ -29,6 +29,6 @@ export async function POST(req: Request) {
     status: "open",
   };
 
-  addSupportTicket(ticket);
+  await addSupportTicket(ticket);
   return NextResponse.json({ ticket }, { status: 201 });
 }

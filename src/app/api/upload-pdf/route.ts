@@ -31,18 +31,28 @@ export async function POST(req: NextRequest) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[RAG] Indexing error:", err);
     if (message.includes("429") || message.includes("quota")) {
-      return NextResponse.json({
-        error: "Превышен лимит OpenAI API. PDF сохранён, но индексация не удалась. Проверьте баланс и тарифный план.",
-      }, { status: 429 });
+      return NextResponse.json(
+        {
+          error:
+            "Превышен лимит OpenAI API. PDF сохранён, но индексация не удалась. Проверьте баланс и тарифный план.",
+        },
+        { status: 429 },
+      );
     }
     if (message.includes("401") || message.includes("invalid")) {
-      return NextResponse.json({
-        error: "Ошибка авторизации OpenAI. Проверьте OPENAI_API_KEY в .env.",
-      }, { status: 401 });
+      return NextResponse.json(
+        {
+          error: "Ошибка авторизации OpenAI. Проверьте OPENAI_API_KEY в .env.",
+        },
+        { status: 401 },
+      );
     }
-    return NextResponse.json({
-      error: `Ошибка индексации: ${message}`,
-    }, { status: 500 });
+    return NextResponse.json(
+      {
+        error: `Ошибка индексации: ${message}`,
+      },
+      { status: 500 },
+    );
   }
 
   return NextResponse.json({

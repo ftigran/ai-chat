@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import type { Message, McpServer } from "@/types/chat";
 import { parseMessageParts } from "@/lib/parse-message";
 
@@ -8,14 +8,32 @@ export function useChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+
+  // Abort on unmount
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   async function callAPI(
     msgsToSend: Message[],
     assistantIndex: number,
     model: string,
     activeServers: McpServer[],
-    options?: { modelOverride?: string; systemPrompt?: string; ragEnabled?: boolean; mcpDisabled?: boolean }
+    options?: {
+      modelOverride?: string;
+      systemPrompt?: string;
+      ragEnabled?: boolean;
+      mcpDisabled?: boolean;
+    },
   ): Promise<void> {
+    // Abort any previous in-flight request
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
       const apiMessages = msgsToSend.map((m) => ({
         role: m.role,
@@ -38,6 +56,7 @@ export function useChat() {
           ...(options?.systemPrompt && { systemPrompt: options.systemPrompt }),
           ragEnabled: options?.ragEnabled ?? false,
         }),
+        signal: controller.signal,
       });
 
       if (!res.body) throw new Error("No response body");
@@ -57,10 +76,14 @@ export function useChat() {
         });
       }
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
       const msg = err instanceof Error ? err.message : "Error";
       setMessages((prev) => {
         const updated = [...prev];
-        updated[assistantIndex] = { role: "assistant", parts: [{ type: "text", content: `Error: ${msg}` }] };
+        updated[assistantIndex] = {
+          role: "assistant",
+          parts: [{ type: "text", content: `Error: ${msg}` }],
+        };
         return updated;
       });
     } finally {
@@ -71,7 +94,12 @@ export function useChat() {
   async function send(
     model: string,
     activeServers: McpServer[],
-    options?: { systemPrompt?: string; modelOverride?: string; ragEnabled?: boolean; mcpDisabled?: boolean }
+    options?: {
+      systemPrompt?: string;
+      modelOverride?: string;
+      ragEnabled?: boolean;
+      mcpDisabled?: boolean;
+    },
   ) {
     const text = input.trim();
     if (!text || loading) return;
@@ -93,7 +121,7 @@ export function useChat() {
     newText: string,
     model: string,
     activeServers: McpServer[],
-    options?: { systemPrompt?: string; ragEnabled?: boolean; mcpDisabled?: boolean }
+    options?: { systemPrompt?: string; ragEnabled?: boolean; mcpDisabled?: boolean },
   ) {
     if (!newText.trim() || loading) return;
 
@@ -110,7 +138,12 @@ export function useChat() {
     assistantIdx: number,
     model: string,
     activeServers: McpServer[],
-    options?: { modelOverride?: string; systemPrompt?: string; ragEnabled?: boolean; mcpDisabled?: boolean }
+    options?: {
+      modelOverride?: string;
+      systemPrompt?: string;
+      ragEnabled?: boolean;
+      mcpDisabled?: boolean;
+    },
   ) {
     if (loading) return;
 
@@ -125,15 +158,22 @@ export function useChat() {
     await callAPI(msgsToSend, assistantIdx, model, activeServers, options);
   }
 
-  function handleKeyDown(
-    e: React.KeyboardEvent<HTMLTextAreaElement>,
-    onSend: () => void
-  ) {
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>, onSend: () => void) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       onSend();
     }
   }
 
-  return { messages, setMessages, input, setInput, loading, send, saveEdit, regenerate, handleKeyDown };
+  return {
+    messages,
+    setMessages,
+    input,
+    setInput,
+    loading,
+    send,
+    saveEdit,
+    regenerate,
+    handleKeyDown,
+  };
 }

@@ -103,9 +103,18 @@ export default function SupportPage() {
     <div className="flex flex-col h-screen bg-gray-950 text-gray-100">
       <header className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
         <div className="flex items-center gap-3">
-          <Link href="/" className="text-gray-400 hover:text-white transition-colors" title="Назад в чат">
+          <Link
+            href="/"
+            className="text-gray-400 hover:text-white transition-colors"
+            title="Назад в чат"
+          >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M15 19l-7-7 7-7"
+              />
             </svg>
           </Link>
           <h1 className="text-lg font-semibold">Поддержка</h1>
@@ -115,7 +124,10 @@ export default function SupportPage() {
       <main className="flex-1 overflow-y-auto px-6 py-6">
         <div className="max-w-4xl mx-auto space-y-6">
           {/* Create ticket form */}
-          <form onSubmit={handleSubmit} className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-4">
+          <form
+            onSubmit={handleSubmit}
+            className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-4"
+          >
             <h2 className="text-sm font-semibold">Создать тикет</h2>
 
             <div>
@@ -151,7 +163,9 @@ export default function SupportPage() {
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   {CATEGORY_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
                   ))}
                 </select>
               </div>
@@ -163,7 +177,9 @@ export default function SupportPage() {
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   {PRIORITY_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
                   ))}
                 </select>
               </div>
@@ -196,24 +212,34 @@ export default function SupportPage() {
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
-                          <span className={`text-sm font-medium ${ticket.status === "closed" ? "line-through text-gray-500" : ""}`}>
+                          <span
+                            className={`text-sm font-medium ${ticket.status === "closed" ? "line-through text-gray-500" : ""}`}
+                          >
                             {ticket.title}
                           </span>
-                          <span className={`inline-flex text-[10px] px-1.5 py-0.5 rounded-full border ${CATEGORY_STYLE[ticket.category]}`}>
+                          <span
+                            className={`inline-flex text-[10px] px-1.5 py-0.5 rounded-full border ${CATEGORY_STYLE[ticket.category]}`}
+                          >
                             {CATEGORY_OPTIONS.find((o) => o.value === ticket.category)?.label}
                           </span>
-                          <span className={`inline-flex text-[10px] px-1.5 py-0.5 rounded-full border ${PRIORITY_STYLE[ticket.priority]}`}>
+                          <span
+                            className={`inline-flex text-[10px] px-1.5 py-0.5 rounded-full border ${PRIORITY_STYLE[ticket.priority]}`}
+                          >
                             {PRIORITY_OPTIONS.find((o) => o.value === ticket.priority)?.label}
                           </span>
-                          <span className={`inline-flex text-[10px] px-1.5 py-0.5 rounded-full border ${
-                            ticket.status === "open"
-                              ? "bg-emerald-900/40 text-emerald-400 border-emerald-700/50"
-                              : "bg-gray-700/50 text-gray-500 border-gray-600/50"
-                          }`}>
+                          <span
+                            className={`inline-flex text-[10px] px-1.5 py-0.5 rounded-full border ${
+                              ticket.status === "open"
+                                ? "bg-emerald-900/40 text-emerald-400 border-emerald-700/50"
+                                : "bg-gray-700/50 text-gray-500 border-gray-600/50"
+                            }`}
+                          >
                             {ticket.status === "open" ? "Открыт" : "Закрыт"}
                           </span>
                         </div>
-                        <p className="text-xs text-gray-400 mb-1 whitespace-pre-wrap">{ticket.description}</p>
+                        <p className="text-xs text-gray-400 mb-1 whitespace-pre-wrap">
+                          {ticket.description}
+                        </p>
                         <span className="text-[10px] text-gray-600">
                           {new Date(ticket.timestamp).toLocaleString("ru-RU", {
                             day: "2-digit",
@@ -237,8 +263,18 @@ export default function SupportPage() {
                           className="text-xs text-gray-500 hover:text-red-400 px-2 py-1 rounded-lg hover:bg-gray-700 transition-colors"
                           title="Удалить"
                         >
-                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                          <svg
+                            className="w-3.5 h-3.5"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                            />
                           </svg>
                         </button>
                       </div>

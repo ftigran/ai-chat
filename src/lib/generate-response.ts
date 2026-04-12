@@ -1,16 +1,11 @@
-import OpenAI from "openai";
+import { getGroqClient } from "@/lib/llm-clients";
 
 export async function generateResponse(
   message: string,
   systemPrompt: string,
   modelId: string,
 ): Promise<string> {
-  const groq = new OpenAI({
-    apiKey: process.env.GROQ_API_KEY!,
-    baseURL: "https://api.groq.com/openai/v1",
-  });
-
-  const response = await groq.chat.completions.create({
+  const response = await getGroqClient().chat.completions.create({
     model: modelId,
     messages: [
       { role: "system", content: systemPrompt },

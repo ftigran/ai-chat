@@ -1,18 +1,12 @@
 import path from "path";
 import fs from "fs/promises";
-import {
-  VectorStoreIndex,
-  storageContextFromDefaults,
-  Settings,
-  MetadataMode,
-} from "llamaindex";
+import { VectorStoreIndex, storageContextFromDefaults, Settings, MetadataMode } from "llamaindex";
 import { OpenAIEmbedding } from "@llamaindex/openai";
+import { env } from "@/lib/env";
+import { RAG_TOP_K } from "@/constants/config";
 
 const PERSIST_DIR = path.join(process.cwd(), "data", "index");
-const PDF_PATH =
-  process.env.RAG_PDF_PATH ??
-  path.join(process.cwd(), "data", "pdfs", "document.pdf");
-const TOP_K = 5;
+const PDF_PATH = env.RAG_PDF_PATH ?? path.join(process.cwd(), "data", "pdfs", "document.pdf");
 
 // Module-level singleton — survives across requests in the same Node process
 let cachedIndex: VectorStoreIndex | null = null;
@@ -25,7 +19,7 @@ export function getLastIndexError(): string | null {
 function configureEmbeddings() {
   Settings.embedModel = new OpenAIEmbedding({
     model: "text-embedding-3-small",
-    apiKey: process.env.OPENAI_API_KEY!,
+    apiKey: env.OPENAI_API_KEY!,
   });
 }
 
@@ -84,7 +78,7 @@ export async function queryRAG(userQuery: string): Promise<string> {
   try {
     const index = await getIndex();
     if (!index) return "";
-    const retriever = index.asRetriever({ similarityTopK: TOP_K });
+    const retriever = index.asRetriever({ similarityTopK: RAG_TOP_K });
     const nodes = await retriever.retrieve({ query: userQuery });
 
     if (!nodes.length) return "";

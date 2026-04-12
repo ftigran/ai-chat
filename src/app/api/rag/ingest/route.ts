@@ -2,13 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { rm, mkdir } from "fs/promises";
 import path from "path";
 import { invalidateIndexCache, getIndex } from "@/lib/rag-service";
+import { env } from "@/lib/env";
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
-  if (
-    process.env.RAG_INGEST_SECRET &&
-    body.secret !== process.env.RAG_INGEST_SECRET
-  ) {
+  if (env.RAG_INGEST_SECRET && body.secret !== env.RAG_INGEST_SECRET) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

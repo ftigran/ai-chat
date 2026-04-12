@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import type { MessagePart } from "@/types/chat";
 
 export function useVoice(onTranscription: (text: string) => void) {
@@ -8,11 +8,38 @@ export function useVoice(onTranscription: (text: string) => void) {
   const [transcribing, setTranscribing] = useState(false);
   const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
   const [ttsError, setTtsError] = useState<string | null>(null);
+  const [micError, setMicError] = useState<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const currentObjectUrlRef = useRef<string | null>(null);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (currentAudioRef.current) {
+        currentAudioRef.current.pause();
+        currentAudioRef.current = null;
+      }
+      if (currentObjectUrlRef.current) {
+        URL.revokeObjectURL(currentObjectUrlRef.current);
+        currentObjectUrlRef.current = null;
+      }
+      if (mediaRecorderRef.current?.state === "recording") {
+        mediaRecorderRef.current.stop();
+      }
+    };
+  }, []);
+
+  function revokeCurrentUrl() {
+    if (currentObjectUrlRef.current) {
+      URL.revokeObjectURL(currentObjectUrlRef.current);
+      currentObjectUrlRef.current = null;
+    }
+  }
 
   async function toggleRecording() {
+    setMicError(null);
     if (recording) {
       mediaRecorderRef.current?.stop();
       return;
@@ -46,7 +73,8 @@ export function useVoice(onTranscription: (text: string) => void) {
       mediaRecorder.start();
       setRecording(true);
     } catch {
-      alert("Не удалось получить доступ к микрофону");
+      setMicError("Не удалось получить доступ к микрофону");
+      setTimeout(() => setMicError(null), 4000);
     }
   }
 
@@ -54,6 +82,7 @@ export function useVoice(onTranscription: (text: string) => void) {
     if (speakingIndex === index) {
       currentAudioRef.current?.pause();
       currentAudioRef.current = null;
+      revokeCurrentUrl();
       setSpeakingIndex(null);
       return;
     }
@@ -74,19 +103,29 @@ export function useVoice(onTranscription: (text: string) => void) {
         body: JSON.stringify({ text }),
       });
       if (!res.ok) {
-        const msg = res.status === 402
-          ? "Озвучка недоступна: требуется платный план ElevenLabs"
-          : `Ошибка озвучки (${res.status})`;
+        const msg =
+          res.status === 402
+            ? "Озвучка недоступна: требуется платный план ElevenLabs"
+            : `Ошибка озвучки (${res.status})`;
         setTtsError(msg);
         setTimeout(() => setTtsError(null), 4000);
         setSpeakingIndex(null);
         return;
       }
       const blob = await res.blob();
-      const audio = new Audio(URL.createObjectURL(blob));
+      revokeCurrentUrl();
+      const objectUrl = URL.createObjectURL(blob);
+      currentObjectUrlRef.current = objectUrl;
+      const audio = new Audio(objectUrl);
       currentAudioRef.current = audio;
-      audio.onended = () => setSpeakingIndex(null);
-      audio.onerror = () => setSpeakingIndex(null);
+      audio.onended = () => {
+        setSpeakingIndex(null);
+        revokeCurrentUrl();
+      };
+      audio.onerror = () => {
+        setSpeakingIndex(null);
+        revokeCurrentUrl();
+      };
       audio.play();
     } catch {
       setTtsError("Не удалось подключиться к сервису озвучки");
@@ -95,5 +134,13 @@ export function useVoice(onTranscription: (text: string) => void) {
     }
   }
 
-  return { recording, transcribing, speakingIndex, ttsError, toggleRecording, speakMessage };
+  return {
+    recording,
+    transcribing,
+    speakingIndex,
+    ttsError,
+    micError,
+    toggleRecording,
+    speakMessage,
+  };
 }

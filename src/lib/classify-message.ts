@@ -1,8 +1,7 @@
-import OpenAI from "openai";
 import { AGENTS, DEFAULT_AGENT_ID } from "@/lib/agents";
 import type { Classification } from "@/lib/types";
-
-const CLASSIFIER_MODEL = "llama-3.1-8b-instant";
+import { getGroqClient } from "@/lib/llm-clients";
+import { CLASSIFIER_MODEL } from "@/constants/config";
 
 function buildClassifierPrompt(): string {
   const categories = AGENTS.map((a) => `- ${a.id}: ${a.description}`).join("\n");
@@ -19,12 +18,7 @@ export async function classifyMessage(message: string): Promise<Classification> 
     return { category: DEFAULT_AGENT_ID, confidence: 0, reasoning: "Empty message" };
   }
 
-  const groq = new OpenAI({
-    apiKey: process.env.GROQ_API_KEY!,
-    baseURL: "https://api.groq.com/openai/v1",
-  });
-
-  const response = await groq.chat.completions.create({
+  const response = await getGroqClient().chat.completions.create({
     model: CLASSIFIER_MODEL,
     messages: [
       { role: "system", content: buildClassifierPrompt() },
@@ -37,13 +31,21 @@ export async function classifyMessage(message: string): Promise<Classification> 
   const text = response.choices[0]?.message?.content?.trim() ?? "";
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
-    return { category: DEFAULT_AGENT_ID, confidence: 0, reasoning: "Failed to parse classification" };
+    return {
+      category: DEFAULT_AGENT_ID,
+      confidence: 0,
+      reasoning: "Failed to parse classification",
+    };
   }
 
   const parsed = JSON.parse(jsonMatch[0]) as Classification;
   const validAgent = AGENTS.find((a) => a.id === parsed.category);
   if (!validAgent) {
-    return { category: DEFAULT_AGENT_ID, confidence: parsed.confidence ?? 0, reasoning: parsed.reasoning ?? "Unknown category" };
+    return {
+      category: DEFAULT_AGENT_ID,
+      confidence: parsed.confidence ?? 0,
+      reasoning: parsed.reasoning ?? "Unknown category",
+    };
   }
 
   return parsed;

@@ -9,7 +9,11 @@ export function useMcpServers() {
   useEffect(() => {
     const saved = localStorage.getItem("mcpServers");
     if (saved) {
-      try { setServers(JSON.parse(saved)); } catch { /* ignore */ }
+      try {
+        setServers(JSON.parse(saved));
+      } catch {
+        /* ignore */
+      }
     }
   }, []);
 

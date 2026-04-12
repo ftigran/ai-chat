@@ -1,8 +1,9 @@
-import OpenAI from "openai";
 import { NextRequest, NextResponse } from "next/server";
+import { getGroqClient } from "@/lib/llm-clients";
+import { IMPROVE_PROMPT_MODEL } from "@/constants/config";
 
 export async function POST(req: NextRequest) {
-  const { agentId, agentName, currentPrompt, liked, disliked } = await req.json() as {
+  const { agentId, agentName, currentPrompt, liked, disliked } = (await req.json()) as {
     agentId: string;
     agentName: string;
     currentPrompt: string;
@@ -14,18 +15,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "agentId and currentPrompt are required" }, { status: 400 });
   }
 
-  const groq = new OpenAI({
-    apiKey: process.env.GROQ_API_KEY!,
-    baseURL: "https://api.groq.com/openai/v1",
-  });
+  const likedSection =
+    liked.length > 0
+      ? `\nПримеры ответов, которые пользователи оценили ПОЛОЖИТЕЛЬНО (👍):\n${liked.map((t, i) => `${i + 1}. ${t}`).join("\n")}`
+      : "";
 
-  const likedSection = liked.length > 0
-    ? `\nПримеры ответов, которые пользователи оценили ПОЛОЖИТЕЛЬНО (👍):\n${liked.map((t, i) => `${i + 1}. ${t}`).join("\n")}`
-    : "";
-
-  const dislikedSection = disliked.length > 0
-    ? `\nПримеры ответов, которые пользователи оценили НЕГАТИВНО (👎):\n${disliked.map((t, i) => `${i + 1}. ${t}`).join("\n")}`
-    : "";
+  const dislikedSection =
+    disliked.length > 0
+      ? `\nПримеры ответов, которые пользователи оценили НЕГАТИВНО (👎):\n${disliked.map((t, i) => `${i + 1}. ${t}`).join("\n")}`
+      : "";
 
   const userPrompt = `Ты — эксперт по написанию системных промптов для AI-агентов.
 
@@ -42,8 +40,8 @@ ${dislikedSection}
 Отвечай ТОЛЬКО текстом нового системного промпта — без пояснений, без кавычек, без заголовков.`;
 
   try {
-    const completion = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
+    const completion = await getGroqClient().chat.completions.create({
+      model: IMPROVE_PROMPT_MODEL,
       messages: [{ role: "user", content: userPrompt }],
       max_tokens: 500,
       temperature: 0.7,

@@ -8,7 +8,7 @@ export function saveFeedback(fb: MessageFeedback): void {
   const all = loadFeedbacks();
   // Replace existing feedback for same conversation+messageIndex
   const idx = all.findIndex(
-    (f) => f.conversationId === fb.conversationId && f.messageIndex === fb.messageIndex
+    (f) => f.conversationId === fb.conversationId && f.messageIndex === fb.messageIndex,
   );
   if (idx >= 0) {
     all[idx] = fb;
